@@ -425,6 +425,11 @@ export function InvoiceDetail() {
               {invoice.paymentReference && (
                 <p className="mt-1 text-sm text-emerald-700">Referencia: {invoice.paymentReference}</p>
               )}
+              <p className="mt-1 text-xs text-emerald-600">
+                {invoice.paymentSource === "bc"
+                  ? "Sincronizado automaticamente desde Business Central"
+                  : "Registrado manualmente en el portal"}
+              </p>
             </div>
           ) : (
             <div className="mt-5 border-t border-slate-100 pt-4">

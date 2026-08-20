@@ -1,0 +1,7 @@
+# Referencia — instalar con `crontab -e` en el servidor (no se aplica solo).
+# Cada 30 min: sincroniza vendor ledger entries desde la Custom API propia
+# (infra/business-central/), publicada en Test672026 el 2026-08-20.
+# Intervalo mas largo que ordenes/recepciones a proposito: el dataset de
+# ledger entries es mucho mas grande (miles de asientos), y el estado de
+# pago cambia con menos frecuencia que las ordenes/recepciones.
+*/30 * * * * PORTAL_ANON_KEY="<pegar VITE_SUPABASE_ANON_KEY de portal/.env>" /home/ubuntu/adsemble/portal/scripts/sync-payments.sh >>/home/ubuntu/adsemble/portal/logs/sync-payments.cron.log 2>&1

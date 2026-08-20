@@ -36,11 +36,27 @@ sandbox — la API v2.0 no usa `/content` como otras APIs OData de BC).
 
 | Entidad | Estado | Uso actual |
 |---|---|---|
-| `purchaseOrders` + `purchaseOrderLines` | ✅ Confirmado, en uso | `bc-sync-orders` — sync BC → Supabase |
-| `purchaseInvoices` (crear cabecera + líneas + adjunto) | ✅ Confirmado, en uso | `bc-export-invoice` — sync Supabase → BC |
+| `purchaseOrders` + `purchaseOrderLines` | ✅ Confirmado, en uso (API estándar) | `bc-sync-orders` — sync BC → Supabase |
+| `purchaseInvoices` (crear cabecera + líneas + adjunto) | ✅ Confirmado, en uso (API estándar) | `bc-export-invoice` — sync Supabase → BC |
 | `vendors` | Sin sync dedicado hoy | los vendors se crean al vuelo desde `bc-sync-orders`, no hay un `bc-sync-vendors` propio todavía |
-| Recepciones (`purchaseReceipts`) | **No confirmado para este tenant** | pendiente — necesario para "confirmación de órdenes" y three-way matching |
-| Vendor Ledger Entries / pagos | **No confirmado para este tenant** | pendiente — bloqueante para "consulta de pagos y estado de cuenta" |
+| `purchaseReceipts` (recepciones) | ✅ Confirmado, en uso — **Custom API propia** (`infra/business-central/`, publicada en `Test672026` el 2026-08-20, no existe en la API estándar para este tenant) | `bc-sync-receipts` — sync BC → Supabase, mostrado en `OrderDetail` |
+| `vendorLedgerEntries` (pagos) | ✅ Confirmado, en uso — **Custom API propia**, misma extensión | `bc-sync-payments` — sync BC → Supabase, reemplaza el estado de pago manual cuando hay match |
+
+Las dos Custom API pages viven bajo un prefijo distinto al de la API
+estándar: `/api/adsemble/vendorPortal/v1.0/` en vez de `/api/v2.0/`.
+`_shared/bc-client.ts` soporta ambos (parámetro `api: "standard" | "custom"`
+en `bcGet`/`bcGetAll`).
+
+**Hallazgo importante al conectar `bc-sync-payments` con datos reales**: el
+número de documento que `bc-export-invoice` recibe al crear la factura
+borrador (`purchaseInvoices.number`, guardado en `invoices.bc_invoice_number`)
+es de una serie **distinta** a la del asiento contable una vez posteado
+(`vendorLedgerEntries.documentNo`) — confirmado en vivo: `CF-001918`
+(borrador) vs. `CFR-000001` (posteado). Emparejar por esos campos nunca
+hubiera funcionado. El campo que sí sobrevive el posteo es
+`externalDocumentNo` (= "Vendor Invoice No." que se manda al crear la
+factura) — `bc-sync-payments` empareja por ahí primero, usando
+`bc_invoice_number`/`documentNo` solo como respaldo.
 
 Nota importante confirmada en sandbox: el campo `orderId` de `purchaseInvoices`
 es de solo lectura en la API v2.0 ("Control 'orderId' is read-only") — no se
@@ -69,19 +85,15 @@ por `bc_id` en `purchase_orders`, y **reemplaza** las líneas en cada corrida
 (`delete` + `insert`) en `purchase_orders_lines`. Resuelve/crea el `vendor_id`
 por `vendor_number` si no existe.
 
-**Pendiente:** no hay cron/schedule — es invocación manual hoy. Ver
-`IMPLEMENTATION_PLAN.md`.
+Automatizada por cron cada 15 min desde 2026-08-20.
 
 ## 7. Lo que falta para cerrar el alcance comprometido
 
-- **Confirmación de órdenes de compra**: no hay endpoint de BC identificado
-  para esto todavía — evaluar si existe una acción bound (`Microsoft.NAV.*`)
-  o si queda como registro solo-portal (nunca escribe a BC directo, como
-  hacía el plan original).
-- **Pagos / estado de cuenta**: requiere confirmar si el tenant expone
-  `vendorLedgerEntries` o si hace falta una Custom API page (extensión AL) —
-  este es el mismo tipo de brecha que ya se resolvió para `purchaseOrders`,
-  pero aún no se ha hecho el descubrimiento para pagos.
+- ~~Confirmación de órdenes de compra~~ — resuelto como registro solo-portal
+  (nunca escribe a BC directo), no había acción bound identificada para esto.
+- ~~Pagos / estado de cuenta~~ — resuelto: `vendorLedgerEntries` vía Custom
+  API propia (`infra/business-central/`), publicada y confirmada en
+  `Test672026` el 2026-08-20.
 - **Sync de perfil de vendor** (dirección, contacto, términos de pago): no
   confirmado qué campos expone `vendors` para este tenant más allá de lo ya
   usado (`vendorNumber`).

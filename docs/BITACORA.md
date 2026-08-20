@@ -442,6 +442,67 @@ choque con algo ya registrado. Pendiente de que Jonatan reintente `F5`.
 
 ---
 
+## 2026-08-20 (continuación 12) — Cablear recepciones y pagos reales de BC
+
+Con los dos endpoints confirmados funcionando (continuación 11), se
+construyó el resto de la cadena: BC → Supabase → frontend.
+
+**Hecho:**
+- `_shared/bc-client.ts`: `bcGet`/`bcGetAll` ahora aceptan un parámetro
+  `api: "standard" | "custom"` para elegir entre `/api/v2.0/` (BC) y
+  `/api/adsemble/vendorPortal/v1.0/` (la extensión propia). `bcPost`/
+  `bcAttachFile` sin cambios de comportamiento (siempre `"standard"`).
+- `bc-sync-receipts` (nueva Edge Function): trae `purchaseReceipts`,
+  empareja por `order_number` (el campo legible, no el `bc_id`) contra
+  `purchase_orders`, upsert idempotente en la tabla nueva
+  `purchase_order_receipts`. Probada: `148` recepciones procesadas, `2`
+  emparejadas contra las `10` órdenes de prueba (el resto no tiene orden
+  correspondiente en el dataset de dev — esperado).
+- `bc-sync-payments` (nueva Edge Function): trae `vendorLedgerEntries`
+  filtradas server-side (`$filter=documentType eq 'Invoice'`) y actualiza
+  `paid_at`/`payment_due_date`/`payment_source='bc'` en `invoices`.
+  **Primera versión tuvo timeout** (`WorkerRequestCancelled`) por un
+  patrón N+1 (una consulta a Supabase por cada uno de miles de asientos)
+  — corregido a una sola consulta + `Map` en memoria, bajó a 2.2s.
+- **Hallazgo real al probar con datos reales**: el número de factura que
+  guarda `bc-export-invoice` al crear el documento (`bc_invoice_number`,
+  ej. `CF-001918`) es de una serie distinta a la del asiento ya posteado
+  (`documentNo`, ej. `CFR-000001`) — confirmado comparando contra
+  `vendorLedgerEntries` reales. Emparejar por ese campo nunca hubiera
+  funcionado después de que BC postea la factura. Corregido: el match
+  ahora es primero por `externalDocumentNo` (= el NCF/número que se manda
+  como "Vendor Invoice No." al crear, sobrevive el posteo), con
+  `documentNo`/`bc_invoice_number` como respaldo.
+- **No se confirmó un match real todavía**: las 2 facturas de prueba
+  `processed` en la base (`CF-001918`, `CF-001919`) no aparecen ni en
+  `purchaseInvoices` (borradores) ni en `vendorLedgerEntries` — probablemente
+  nunca se postearon en BC, o son de una prueba anterior que ya no existe
+  en el sandbox. El código de sync está probado en rendimiento y lógica,
+  pero falta una prueba end-to-end con una factura real: subir, aprobar,
+  exportar, que alguien la postee en BC, correr el sync, confirmar el match.
+- Migración `app/schema-v7.sql`: tabla `purchase_order_receipts` (+ RLS
+  escopada, mismo patrón que `purchase_orders_lines`), columnas
+  `invoices.payment_source`/`bc_ledger_entry_no`. El RPC manual
+  `rpc_mark_invoice_paid` (schema-v6) se actualizó para marcar
+  `payment_source='manual'` explícitamente, así el frontend distingue con
+  certeza "alguien lo marcó a mano" de "vino sincronizado de BC".
+- Frontend: nueva tarjeta "Recepciones" en `OrderDetail`, indicador de
+  origen del pago ("Sincronizado desde Business Central" / "Registrado
+  manualmente") en `InvoiceDetail` y columna "Origen" en `/payments`.
+  `tsc --noEmit` + `vite build` limpios, desplegado.
+- Automatizado por cron: recepciones cada 15 min, pagos cada 30 min
+  (dataset mucho más grande, cambia con menos frecuencia) — mismo patrón
+  que `bc-sync-orders`, agregado al crontab sin tocar las entradas
+  existentes.
+
+**Con esto, los tres bloqueos reales que quedaban del compromiso de 15
+días (confirmación de BC, publicación de los endpoints, cableado a la
+app) están cerrados.** Lo que queda es exactamente lo que no depende de
+código: UAT con un proveedor real, decisión de dominio, y confirmar el
+match de pagos con una factura realmente posteada en BC.
+
+---
+
 ## 2026-08-20 (continuación 11) — Publicación exitosa y endpoints confirmados
 
 `F5` publicó sin errores: `"Success: The package ... has been published

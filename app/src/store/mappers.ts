@@ -6,6 +6,7 @@ import type {
   PortalUser,
   PurchaseOrder,
   PurchaseOrderLine,
+  PurchaseOrderReceipt,
   Supplier,
 } from "./types";
 
@@ -45,6 +46,8 @@ export function mapInvoice(row: Record<string, unknown>): Invoice {
     paymentDueDate: (row.payment_due_date as string) ?? null,
     paidAt: (row.paid_at as string) ?? null,
     paymentReference: (row.payment_reference as string) ?? null,
+    paymentSource: (row.payment_source as Invoice["paymentSource"]) ?? null,
+    bcLedgerEntryNo: (row.bc_ledger_entry_no as string) ?? null,
     updatedAt: (row.updated_at as string) ?? (row.created_at as string) ?? "",
     createdAt: (row.created_at as string) ?? "",
   };
@@ -93,6 +96,18 @@ export function mapPurchaseOrderLine(row: Record<string, unknown>): PurchaseOrde
     bcLineObjectNumber: (row.bc_line_object_number as string) ?? null,
     bcUnitCost: row.bc_unit_cost != null ? Number(row.bc_unit_cost) : null,
     bcTaxCode: (row.bc_tax_code as string) ?? null,
+  };
+}
+
+export function mapPurchaseOrderReceipt(row: Record<string, unknown>): PurchaseOrderReceipt {
+  return {
+    id: row.id as string,
+    orderId: row.order_id as string,
+    companyId: (row.company_id as string) ?? null,
+    bcId: (row.bc_id as string) ?? null,
+    receiptNumber: (row.receipt_number as string) ?? "",
+    vendorShipmentNo: (row.vendor_shipment_no as string) ?? null,
+    postingDate: (row.posting_date as string) ?? null,
   };
 }
 

@@ -51,8 +51,10 @@ Falta cerrar en este bloque:
 - [x] `bc-sync-orders` automatizada por cron cada 15 min — 2026-08-20, ver
       `infra/supabase/scripts/` y `BITACORA.md` (incluye nota de rendimiento
       N+1 a revisar antes de escalar a datos reales de BC).
-- Mostrar recepciones en el detalle de orden, si BC las expone para este
-  tenant (Días 1-2 lo determina).
+- [x] Mostrar recepciones en el detalle de orden — 2026-08-20, ver Días
+      13-15 (se cerró junto con el resto del cableado a BC).
+
+**Días 7-9 completos.**
 
 ## Días 10-13 — Facturas
 
@@ -72,12 +74,19 @@ Falta cerrar en este bloque:
 - [x] Estado de pago por factura (`paid_at`/`payment_reference`, derivado
       sin agregar valor nuevo a `invoices.status`) + fecha posible de pago
       (ya existía) — 2026-08-20, ver `BITACORA.md`.
-- [x] Página de consulta de pagos (`/payments`) — 2026-08-20. **No** incluye
-      estado de cuenta completo (saldo inicial, notas de crédito, saldo
-      corriente): eso sigue bloqueado en la sync de vendor ledger entries
-      desde BC, condicionada a la confirmación de Días 1-2.
-- Sync de pagos/vendor ledger desde BC — bloqueado hasta confirmar que el
-  tenant expone esa entidad (Días 1-2).
+- [x] Página de consulta de pagos (`/payments`) — 2026-08-20.
+- [x] Sync de pagos/vendor ledger desde BC (`bc-sync-payments`, Custom API
+      propia, cron cada 30 min) — 2026-08-20. Corre y empareja
+      correctamente, pero **todavía sin un match confirmado con una
+      factura real posteada** — ver `BITACORA.md`, pendiente de una prueba
+      end-to-end completa.
+- [x] Recepciones en el detalle de orden (`bc-sync-receipts`, cron cada 15
+      min) — 2026-08-20, adelantado desde Días 7-9 una vez confirmado el
+      endpoint.
+- **No incluido, y no es un olvido**: estado de cuenta completo (saldo
+  inicial, notas de crédito, saldo corriente). Lo construido es "consulta
+  de pagos por factura" — un estado de cuenta real necesitaría agregación
+  histórica de `vendorLedgerEntries` más allá de lo que este alcance pedía.
 - UAT con un proveedor real — requiere que Adsemble facilite acceso a un
   proveedor real de prueba.
 - Corte de dominio/DNS y arranque — requiere decisión de Adsemble sobre

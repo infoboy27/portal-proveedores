@@ -16,12 +16,21 @@ que vive en este repo es lo que Adsemble construyó encima:
 ## Edge Functions
 
 - `_shared/bc-client.ts` — cliente mínimo de Business Central API v2.0 (OAuth2 client-credentials). Requiere `BC_TENANT_ID`, `BC_CLIENT_ID`, `BC_CLIENT_SECRET`, `BC_ENVIRONMENT`, `BC_COMPANY_ID` en `supabase/.env` (nunca versionados).
-- `bc-sync-orders` — BC → Supabase, sincroniza `purchaseOrders` + líneas.
-  Automatizada por cron cada 15 min desde 2026-08-20 (`scripts/sync-purchase-orders.sh`
-  + `scripts/sync-purchase-orders.crontab` como referencia — el crontab real
-  vive en el servidor, no en git, porque lleva la anon key inline).
+- `bc-sync-orders` — BC → Supabase, sincroniza `purchaseOrders` + líneas
+  (API estándar). Automatizada por cron cada 15 min.
+- `bc-sync-receipts` — BC → Supabase, sincroniza `purchaseReceipts` (Custom
+  API propia, `infra/business-central/`, publicada 2026-08-20). Automatizada
+  cada 15 min.
+- `bc-sync-payments` — BC → Supabase, sincroniza `vendorLedgerEntries`
+  (Custom API propia) hacia el estado de pago de las facturas (`paid_at`,
+  `payment_due_date`, `payment_source='bc'`). Match por `externalDocumentNo`
+  (no por el número del documento borrador — ver comentario en el código:
+  BC renumera al postear). Automatizada cada 30 min.
 - `bc-export-invoice` — Supabase → BC, exporta una factura aprobada como `purchaseInvoices` (cabecera + líneas + PDF adjunto). Validado en vivo contra el sandbox `Test672026`.
 - `extract-invoice-data` — llama a `ocr-service` para prellenar `invoice_date`/NCF desde el PDF subido, sin pisar datos ya cargados por el proveedor.
+
+Los tres syncs cron (`scripts/sync-*.sh` + referencia `.crontab`) siguen el
+mismo patrón — el crontab real con la anon key vive solo en el servidor.
 
 ## Variables de entorno requeridas (además de las estándar de Supabase)
 

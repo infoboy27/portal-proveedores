@@ -46,10 +46,17 @@ async function getAccessToken(): Promise<string> {
   return cache.accessToken;
 }
 
-function baseUrl(): string {
+// "standard" = API v2.0 de Microsoft (vendors, purchaseInvoices, ...).
+// "custom" = la extension AL propia de Adsemble (infra/business-central/),
+// publicada en Test672026 el 2026-08-20: purchaseReceipts y
+// vendorLedgerEntries, que la API estandar no expone para este tenant.
+type BcApi = "standard" | "custom";
+
+function baseUrl(api: BcApi = "standard"): string {
   const tenantId = requireEnv("BC_TENANT_ID");
   const environment = requireEnv("BC_ENVIRONMENT");
-  return `https://api.businesscentral.dynamics.com/v2.0/${tenantId}/${environment}/api/v2.0`;
+  const apiPath = api === "custom" ? "api/adsemble/vendorPortal/v1.0" : "api/v2.0";
+  return `https://api.businesscentral.dynamics.com/v2.0/${tenantId}/${environment}/${apiPath}`;
 }
 
 function companyPath(path: string): string {
@@ -57,9 +64,9 @@ function companyPath(path: string): string {
   return `/companies(${companyId})${path}`;
 }
 
-async function bcFetch(path: string, init: RequestInit = {}): Promise<Response> {
+async function bcFetch(path: string, api: BcApi = "standard", init: RequestInit = {}): Promise<Response> {
   const token = await getAccessToken();
-  const res = await fetch(`${baseUrl()}${path}`, {
+  const res = await fetch(`${baseUrl(api)}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -69,8 +76,8 @@ async function bcFetch(path: string, init: RequestInit = {}): Promise<Response> 
   return res;
 }
 
-export async function bcGet<T>(path: string): Promise<T> {
-  const res = await bcFetch(companyPath(path));
+export async function bcGet<T>(path: string, api: BcApi = "standard"): Promise<T> {
+  const res = await bcFetch(companyPath(path), api);
   if (!res.ok) {
     throw new Error(`BC GET ${path} -> HTTP ${res.status} ${await res.text()}`);
   }
@@ -79,8 +86,8 @@ export async function bcGet<T>(path: string): Promise<T> {
 
 // Sigue @odata.nextLink hasta agotar las paginas — necesario porque BC pagina
 // resultados por defecto (ej. purchaseOrders con muchas filas).
-export async function bcGetAll<T>(path: string): Promise<T[]> {
-  let url: string | null = `${baseUrl()}${companyPath(path)}`;
+export async function bcGetAll<T>(path: string, api: BcApi = "standard"): Promise<T[]> {
+  let url: string | null = `${baseUrl(api)}${companyPath(path)}`;
   const results: T[] = [];
   while (url) {
     const token = await getAccessToken();
@@ -96,7 +103,7 @@ export async function bcGetAll<T>(path: string): Promise<T[]> {
 }
 
 export async function bcPost<T>(path: string, body: unknown): Promise<T> {
-  const res = await bcFetch(companyPath(path), {
+  const res = await bcFetch(companyPath(path), "standard", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -119,7 +126,7 @@ export async function bcAttachFile(
 ): Promise<{ id: string }> {
   const created = await bcPost<{ id: string }>(`${parentPath}/attachments`, { fileName });
 
-  const res = await bcFetch(companyPath(`${parentPath}/attachments(${created.id})/attachmentContent`), {
+  const res = await bcFetch(companyPath(`${parentPath}/attachments(${created.id})/attachmentContent`), "standard", {
     method: "PATCH",
     headers: { "Content-Type": contentType, "If-Match": "*" },
     body: bytes,

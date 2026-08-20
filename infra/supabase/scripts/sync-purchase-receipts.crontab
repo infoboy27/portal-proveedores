@@ -1,0 +1,4 @@
+# Referencia — instalar con `crontab -e` en el servidor (no se aplica solo).
+# Cada 15 min: sincroniza recepciones de compra desde la Custom API propia
+# (infra/business-central/), publicada en Test672026 el 2026-08-20.
+*/15 * * * * PORTAL_ANON_KEY="<pegar VITE_SUPABASE_ANON_KEY de portal/.env>" /home/ubuntu/adsemble/portal/scripts/sync-purchase-receipts.sh >>/home/ubuntu/adsemble/portal/logs/sync-purchase-receipts.cron.log 2>&1

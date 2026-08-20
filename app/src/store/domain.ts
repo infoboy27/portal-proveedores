@@ -8,6 +8,7 @@ import type {
   PortalUser,
   PurchaseOrder,
   PurchaseOrderLine,
+  PurchaseOrderReceipt,
   Supplier,
 } from "./types";
 import {
@@ -17,6 +18,7 @@ import {
   mapInvoiceLine,
   mapPurchaseOrder,
   mapPurchaseOrderLine,
+  mapPurchaseOrderReceipt,
   mapSupplier,
   mapUser,
 } from "./mappers";
@@ -30,6 +32,7 @@ interface DomainStore {
   invoiceLines: InvoiceLine[];
   purchaseOrders: PurchaseOrder[];
   purchaseOrderLines: PurchaseOrderLine[];
+  purchaseOrderReceipts: PurchaseOrderReceipt[];
   suppliers: Supplier[];
   companies: PortalCompany[];
   users: PortalUser[];
@@ -104,6 +107,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
   invoiceLines: [],
   purchaseOrders: [],
   purchaseOrderLines: [],
+  purchaseOrderReceipts: [],
   suppliers: [],
   companies: [],
   users: [],
@@ -114,23 +118,34 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
   async fetchAll() {
     set({ loading: true, error: null });
     try {
-      const [invoicesRes, invoiceLinesRes, ordersRes, orderLinesRes, suppliersRes, companiesRes, usersRes, auditRes] =
-        await Promise.all([
-          supabase.from("invoices").select("*").order("created_at", { ascending: false }),
-          supabase.from("invoice_lines").select("*").order("sequence", { ascending: true }),
-          supabase.from("purchase_orders").select("*"),
-          supabase.from("purchase_orders_lines").select("*").order("sequence", { ascending: true }),
-          supabase.from("vendors").select("*"),
-          supabase.from("companies").select("*").is("disabled_at", null),
-          supabase.from("user_profiles").select("*"),
-          supabase.from("invoice_status_history").select("*").order("changed_at", { ascending: false }).limit(100),
-        ]);
+      const [
+        invoicesRes,
+        invoiceLinesRes,
+        ordersRes,
+        orderLinesRes,
+        receiptsRes,
+        suppliersRes,
+        companiesRes,
+        usersRes,
+        auditRes,
+      ] = await Promise.all([
+        supabase.from("invoices").select("*").order("created_at", { ascending: false }),
+        supabase.from("invoice_lines").select("*").order("sequence", { ascending: true }),
+        supabase.from("purchase_orders").select("*"),
+        supabase.from("purchase_orders_lines").select("*").order("sequence", { ascending: true }),
+        supabase.from("purchase_order_receipts").select("*").order("posting_date", { ascending: false }),
+        supabase.from("vendors").select("*"),
+        supabase.from("companies").select("*").is("disabled_at", null),
+        supabase.from("user_profiles").select("*"),
+        supabase.from("invoice_status_history").select("*").order("changed_at", { ascending: false }).limit(100),
+      ]);
 
       const firstError =
         invoicesRes.error ??
         invoiceLinesRes.error ??
         ordersRes.error ??
         orderLinesRes.error ??
+        receiptsRes.error ??
         suppliersRes.error ??
         companiesRes.error ??
         usersRes.error ??
@@ -142,6 +157,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
         invoiceLines: (invoiceLinesRes.data ?? []).map(mapInvoiceLine),
         purchaseOrders: (ordersRes.data ?? []).map(mapPurchaseOrder),
         purchaseOrderLines: (orderLinesRes.data ?? []).map(mapPurchaseOrderLine),
+        purchaseOrderReceipts: (receiptsRes.data ?? []).map(mapPurchaseOrderReceipt),
         suppliers: (suppliersRes.data ?? []).map(mapSupplier),
         companies: (companiesRes.data ?? []).map(mapCompany),
         users: (usersRes.data ?? []).map(mapUser),

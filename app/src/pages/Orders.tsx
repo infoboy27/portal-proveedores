@@ -195,6 +195,7 @@ export function OrderDetail() {
   const purchaseOrders = useDomainStore((s) => s.purchaseOrders);
   const suppliers = useDomainStore((s) => s.suppliers);
   const purchaseOrderLines = useDomainStore((s) => s.purchaseOrderLines);
+  const purchaseOrderReceipts = useDomainStore((s) => s.purchaseOrderReceipts);
   const invoices = useDomainStore((s) => s.invoices);
   const uploadInvoice = useDomainStore((s) => s.uploadInvoice);
 
@@ -207,6 +208,10 @@ export function OrderDetail() {
   const lines = useMemo(
     () => purchaseOrderLines.filter((l) => l.orderId === orderId).sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0)),
     [purchaseOrderLines, orderId],
+  );
+  const receipts = useMemo(
+    () => purchaseOrderReceipts.filter((r) => r.orderId === orderId),
+    [purchaseOrderReceipts, orderId],
   );
   const linkedInvoices = useMemo(() => invoices.filter((inv) => inv.purchaseOrderId === orderId), [invoices, orderId]);
   const confirmPurchaseOrder = useDomainStore((s) => s.confirmPurchaseOrder);
@@ -429,6 +434,42 @@ export function OrderDetail() {
                     <td className="px-5 py-4 text-sm font-semibold text-slate-900">
                       {line.amount != null ? formatCurrency(line.amount) : "-"}
                     </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      <Card className="overflow-hidden p-0">
+        <div className="border-b border-slate-100 px-5 py-5">
+          <h2 className="text-lg font-semibold text-slate-950">Recepciones</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Recepciones de mercancia/servicio registradas en Business Central contra esta orden.
+          </p>
+        </div>
+        {receipts.length === 0 ? (
+          <div className="p-5">
+            <p className="font-semibold text-slate-800">Sin recepciones todavia</p>
+            <p className="mt-1 text-sm text-slate-500">Esta orden no tiene recepciones sincronizadas desde BC.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left">
+              <thead className="bg-slate-50/90 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                <tr>
+                  <th className="px-5 py-4">Numero</th>
+                  <th className="px-5 py-4">Fecha</th>
+                  <th className="px-5 py-4">Envio del proveedor</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {receipts.map((r) => (
+                  <tr key={r.id}>
+                    <td className="px-5 py-4 text-sm font-semibold text-slate-900">{r.receiptNumber}</td>
+                    <td className="px-5 py-4 text-sm text-slate-600">{formatDate(r.postingDate)}</td>
+                    <td className="px-5 py-4 text-sm text-slate-600">{r.vendorShipmentNo || "-"}</td>
                   </tr>
                 ))}
               </tbody>

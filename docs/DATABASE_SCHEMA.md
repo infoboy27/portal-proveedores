@@ -29,27 +29,39 @@ BC vía `bc-sync-orders` (se borran y reinsertan en cada corrida — no hay
 merge incremental de líneas).
 
 ### `invoices`
-`id, company_id, purchase_order_id, vendor_id, vendor_name, vendor_tax_id, invoice_number, invoice_tax_number (NCF), invoice_tax_security_number, invoice_date, invoice_duedate, fiscal_duedate, subtotal_amount, discount_amount, total_tax_amount, total_amount, status, file_path, filename, valid_tax_number, valid_invoice_tax_number, rejection_reason, erp_id, bc_invoice_id, bc_invoice_number, export_error_reason, exported_at, payment_due_date, changed_by_user_id, created_at, updated_at`
+`id, company_id, purchase_order_id, vendor_id, vendor_name, vendor_tax_id, invoice_number, invoice_tax_number (NCF), invoice_tax_security_number, invoice_date, invoice_duedate, fiscal_duedate, subtotal_amount, discount_amount, total_tax_amount, total_amount, status, file_path, filename, valid_tax_number, valid_invoice_tax_number, rejection_reason, erp_id, bc_invoice_id, bc_invoice_number, export_error_reason, exported_at, payment_due_date, paid_at, payment_reference, payment_source, bc_ledger_entry_no, changed_by_user_id, created_at, updated_at`
 
 `status`: `draft → uploaded → pending_approval → approved → ready_for_export → exported/processed`,
-con ramas a `rejected` y `export_error`.
+con ramas a `rejected` y `export_error`. **No hay un valor `pending_payment`/`paid`
+en este enum a propósito** — "Pendiente de Pago" vs "Pagada" se deriva de
+`paid_at` sobre `status='processed'` (ver `PaymentStatusBadge.tsx`), evita
+un estado redundante que habría que mantener sincronizado a mano.
 
-`payment_due_date` existe como campo manual (`setInvoicePaymentDueDate` en
-`domain.ts`) — un admin lo llena a mano porque la API estándar de BC no
-expone vendor ledger entries. **Lo que falta** es el estado
-`pending_payment`/`paid` en el enum de `status` y una página de consulta de
-pagos/estado de cuenta — brecha real frente al compromiso (ver `BITACORA.md`).
+`payment_due_date`/`paid_at`/`payment_reference` se llenan de dos formas:
+manualmente (`setInvoicePaymentDueDate`/RPC `rpc_mark_invoice_paid`,
+`payment_source='manual'`) o automáticamente desde BC
+(`bc-sync-payments`, `payment_source='bc'`, emparejado por
+`externalDocumentNo` — ver `BUSINESS_CENTRAL_INTEGRATION.md §4`).
+`bc_ledger_entry_no` guarda qué asiento de BC generó el último cambio, para
+que la sync no re-inserte el mismo evento de auditoría en cada corrida.
 
-**No hay constraint de duplicado** sobre `(vendor_id, invoice_number)` — la
-validación de factura duplicada, monto y cantidad contra la orden está
-pendiente (el código tiene un comentario explícito: "se omite el flujo de
-factura duplicada").
+Índice único parcial `(vendor_id, invoice_number)` (ignorando filas con
+número todavía vacío) — validación de duplicado, con un chequeo previo en
+`domain.ts:updateInvoiceData` que da un mensaje explícito antes de depender
+del error crudo de Postgres. También valida ahí que el total no supere el
+monto de la orden vinculada.
 
-Nota de higiene: estas cinco columnas (`bc_invoice_id`, `bc_invoice_number`,
-`export_error_reason`, `exported_at`, `payment_due_date`) existían en la
-base viva pero nunca se habían capturado en un archivo de migración hasta
-`app/schema-v3.sql` (2026-08-20) — deriva de esquema real, confirmada con
-`pg_dump --schema-only` contra la base de producción interna.
+Nota de higiene: `bc_invoice_id`, `bc_invoice_number`, `export_error_reason`,
+`exported_at`, `payment_due_date` existían en la base viva pero nunca se
+habían capturado en un archivo de migración hasta `app/schema-v3.sql`
+(2026-08-20) — deriva de esquema real, confirmada con `pg_dump --schema-only`
+contra la base de producción interna.
+
+### `purchase_order_receipts`
+`id, order_id→purchase_orders, company_id, bc_id, receipt_number, vendor_shipment_no, posting_date`
+— recepciones de compra, sincronizadas por `bc-sync-receipts` desde la
+Custom API propia de BC (`purchaseReceipts`, no existe en la API estándar
+para este tenant).
 
 ### `invoice_lines`
 `id, invoice_id→invoices, company_id, description, quantity, price, amount, sequence`

@@ -125,6 +125,7 @@ export function Payments() {
                 <th className="px-5 py-4">{t("total")}</th>
                 <th className="px-5 py-4">Fecha posible de pago</th>
                 <th className="px-5 py-4">Estado de pago</th>
+                <th className="px-5 py-4">Origen</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -146,12 +147,15 @@ export function Payments() {
                       <td className="px-5 py-4">
                         <PaymentStatusBadge invoice={inv} />
                       </td>
+                      <td className="px-5 py-4 text-xs text-slate-500">
+                        {inv.paymentSource === "bc" ? "Business Central" : inv.paymentSource === "manual" ? "Manual" : "-"}
+                      </td>
                     </tr>
                   );
                 })
               ) : (
                 <tr>
-                  <td colSpan={6} className="px-5 py-10 text-center text-sm text-slate-500">
+                  <td colSpan={7} className="px-5 py-10 text-center text-sm text-slate-500">
                     No hay facturas procesadas dentro del alcance actual.
                   </td>
                 </tr>

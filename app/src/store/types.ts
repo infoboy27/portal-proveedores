@@ -72,6 +72,10 @@ export interface Invoice {
   // dos casos ("Pendiente de Pago" vs "Pagada", ver PaymentStatusBadge.tsx).
   paidAt: string | null;
   paymentReference: string | null;
+  // 'bc' = escrito por bc-sync-payments (vendorLedgerEntries reales);
+  // 'manual' o null = entrada manual (setInvoicePaymentDueDate/markInvoicePaid).
+  paymentSource: "manual" | "bc" | null;
+  bcLedgerEntryNo: string | null;
   updatedAt: string;
   createdAt: string;
 }
@@ -114,6 +118,16 @@ export interface PurchaseOrderLine {
   bcLineObjectNumber: string | null;
   bcUnitCost: number | null;
   bcTaxCode: string | null;
+}
+
+export interface PurchaseOrderReceipt {
+  id: string;
+  orderId: string;
+  companyId: string | null;
+  bcId: string | null;
+  receiptNumber: string;
+  vendorShipmentNo: string | null;
+  postingDate: string | null;
 }
 
 export interface Supplier {
