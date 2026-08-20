@@ -23,3 +23,8 @@ npm-debug.log*
 # Editors
 .vscode/
 .idea/
+
+# Excepcion: launch.json de la extension AL es config de proyecto real
+# (apunta al sandbox de BC), no preferencias personales de editor.
+!infra/business-central/.vscode/
+!infra/business-central/.vscode/launch.json

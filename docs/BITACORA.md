@@ -388,3 +388,29 @@ extensión para no perderlo.
 `Test672026` publique la extensión, verifique los nombres de campo contra
 el sandbox real, y confirme que responde — recién ahí se cablea
 `bc-client.ts` para consumirla.
+
+---
+
+## 2026-08-20 (continuación 9) — Instalación local de las herramientas AL
+
+Jonatan preguntó qué es AL y si podía ayudarlo a instalar/publicar. Se
+hizo todo lo automatizable desde su máquina:
+
+- VS Code ya estaba instalado; se instaló la extensión **AL Language**
+  (`ms-dynamics-smb.al`) vía `code --install-extension`.
+- `.vscode/launch.json` creado en `infra/business-central/`, ya apuntando
+  al sandbox `Test672026` con el `tenant` real (mismo `BC_TENANT_ID` de
+  `supabase/.env`) — listo para `F5` sin configuración manual.
+- **Bug encontrado y corregido antes de que causara un fallo real**: el
+  `id` puesto en `app.json` al escribir la extensión no era un GUID válido
+  (`...-adsemble0001`, con caracteres no-hexadecimales) — habría fallado
+  al compilar. Reemplazado por un GUID generado de verdad.
+- Carpeta abierta en VS Code, lista para que Jonatan haga `AL: Download
+  Symbols` y `F5` — el único paso que no se puede automatizar es el login
+  interactivo con la cuenta de Microsoft (MFA), porque es su identidad, no
+  algo que se pueda hacer por él.
+
+**Pendiente:** confirmar que `w.deschamps@adsemble.do` tiene permiso de
+desarrollo (`D365 EXTENSION MGT` o `SUPER` en sandbox) en `Test672026` —
+si no lo tiene, alguien con rol de administrador en BC se lo asigna antes
+de intentar publicar.

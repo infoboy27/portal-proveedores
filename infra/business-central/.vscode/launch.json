@@ -1,0 +1,16 @@
+{
+  "version": "0.3.0",
+  "configurations": [
+    {
+      "type": "al",
+      "request": "launch",
+      "name": "Test672026 (Sandbox)",
+      "environmentType": "Sandbox",
+      "environmentName": "Test672026",
+      "tenant": "dd651e07-e13b-4688-823d-7da245bf0163",
+      "authentication": "AAD",
+      "breakOnError": "All",
+      "launchBrowser": true
+    }
+  ]
+}

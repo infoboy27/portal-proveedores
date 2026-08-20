@@ -12,35 +12,44 @@ export de facturas siguen usando la API estándar sin cambios).
 | `src/PurchReceiptsAPI.al` | `purchaseReceipts` / `purchaseReceiptLines` — recepciones publicadas contra una orden de compra |
 | `src/VendorLedgerEntriesAPI.al` | `vendorLedgerEntries` — movimientos de cuentas por pagar (pagos, saldo) |
 
-## Lo que necesitas para publicar esto (no alcanza con el acceso al Admin Center)
+## Ya está instalado y preconfigurado (2026-08-20)
 
-1. **Visual Studio Code** + extensión **"AL Language"** (gratis, de Microsoft, en el marketplace de VS Code).
-2. Un usuario de Business Central con **permisos de desarrollo** en el
+- **VS Code** ya estaba instalado en la máquina de Jonatan.
+- Extensión **"AL Language"** de Microsoft — instalada.
+- `.vscode/launch.json` — ya apunta al sandbox `Test672026` con el mismo
+  `tenant` (`BC_TENANT_ID`) que usa el resto de la integración en
+  `supabase/.env`.
+
+Lo único que falta y **no se puede automatizar** es el login: publicar
+requiere iniciar sesión con una cuenta de Microsoft que tenga permisos de
+desarrollo en ese entorno — es un paso interactivo (con MFA), tiene que
+hacerlo la persona dueña de esa cuenta.
+
+## Lo que falta de tu lado
+
+1. Un usuario de Business Central con **permisos de desarrollo** en el
    entorno sandbox (`Test672026`) — es un permiso distinto al acceso al
    Admin Center que ya tienes. Se otorga vía un permission set que incluya
-   `D365 EXTENSION MGT` (o `SUPER` en sandbox, nunca en producción).
-3. Descargar los símbolos del entorno (`AL: Download Symbols` en VS Code)
-   una vez conectado — esto trae las definiciones reales de las tablas
-   estándar de BC para ese entorno específico.
+   `D365 EXTENSION MGT` (o `SUPER` en sandbox, nunca en producción). Si
+   `w.deschamps@adsemble.do` no lo tiene todavía, alguien con rol de
+   administrador en BC se lo asigna desde **Business Central → Usuarios**.
+2. Iniciar sesión cuando VS Code lo pida (paso 3 abajo).
 
 ## Pasos para publicar en el sandbox
 
-1. Abrir esta carpeta (`infra/business-central/`) en VS Code.
-2. `Ctrl+Shift+P` → **AL: Go!** para inicializar la conexión, o editar
-   `.vscode/launch.json` manualmente con:
-   - `"environmentType": "Sandbox"`
-   - `"environmentName": "Test672026"`
-   - `"tenant"`: el mismo `BC_TENANT_ID` que ya está en `supabase/.env`
-3. `Ctrl+Shift+P` → **AL: Download Symbols**.
-4. Revisar `app.json`: el campo `"application"` debe coincidir con la
+1. La carpeta `infra/business-central/` ya está abierta en VS Code.
+2. `Ctrl+Shift+P` → **AL: Download Symbols** — pedirá iniciar sesión con
+   la cuenta de Microsoft de BC (aquí es donde entra tu MFA). Esto trae
+   las definiciones reales de las tablas estándar de BC para el entorno.
+3. Revisar `app.json`: el campo `"application"` debe coincidir con la
    versión real del entorno (el Admin Center la muestra — a la fecha de
    este documento el entorno mostraba versión ~28.x). Ajustar si no
    coincide.
-5. `F5` (o `Ctrl+F5` para publicar sin depurar) — VS Code compila y
+4. `F5` (o `Ctrl+F5` para publicar sin depurar) — VS Code compila y
    publica la extensión al sandbox.
-6. En el sandbox, **Business Central → Extension Management**, confirmar
+5. En el sandbox, **Business Central → Extension Management**, confirmar
    que "Adsemble Vendor Portal API Extensions" aparece instalada.
-7. Crear (o ampliar) un **permission set** que incluya lectura sobre
+6. Crear (o ampliar) un **permission set** que incluya lectura sobre
    `Adsm Purch Receipts API`, `Adsm Purch Receipt Lines API`, y
    `Adsm Vendor Ledger Entr. API`, y asignarlo a la aplicación
    (`BC_CLIENT_ID`) que ya usa la integración — sin esto, las llamadas
