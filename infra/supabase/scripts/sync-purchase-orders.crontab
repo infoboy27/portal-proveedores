@@ -1,0 +1,9 @@
+# Referencia — instalar con `crontab -e` en el servidor (no se aplica solo).
+# Cada 15 min: sincroniza purchase_orders + lineas desde Business Central.
+#
+# Nota de rendimiento (ver docs/BITACORA.md 2026-08-20): bc-sync-orders trae
+# TODAS las ordenes en cada corrida y hace una llamada a BC por cada orden
+# para sus lineas (N+1). Con el volumen de dev (10 ordenes) no es problema;
+# si el tenant real llega a los ~798 ordenes que tenia el portal legacy,
+# revisar el intervalo (o el patron N+1) antes del corte a produccion.
+*/15 * * * * PORTAL_ANON_KEY="<pegar VITE_SUPABASE_ANON_KEY de portal/.env>" /home/ubuntu/adsemble/portal/scripts/sync-purchase-orders.sh >>/home/ubuntu/adsemble/portal/logs/sync-purchase-orders.cron.log 2>&1

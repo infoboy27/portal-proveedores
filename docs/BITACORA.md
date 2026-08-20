@@ -161,3 +161,37 @@ esa columna antes de usarla.
 el detalle de cada orden individual. Si Adsemble necesita gestionar eso
 como cola (como Approvals.tsx para facturas), es un paso siguiente natural,
 no incluido en el alcance mínimo de "confirmación de órdenes" del correo.
+
+---
+
+## 2026-08-20 (continuación 3) — Automatizar `bc-sync-orders`
+
+**Hecho:**
+- `infra/supabase/scripts/sync-purchase-orders.sh`: invoca la Edge Function
+  vía HTTP (`POST /functions/v1/bc-sync-orders` a través de Kong), loguea
+  cada corrida con timestamp UTC, sale con código de error si la respuesta
+  no trae `"ok":true` (para que un futuro monitor de cron pueda detectarlo).
+  Sigue el mismo patrón que `dondeta/deploy/uptime-check.sh` (script
+  independiente del proceso de la app, corre por cron).
+- Probado manualmente antes de programarlo: `{"ok":true,"ordersProcessed":10,"created":0,"updated":10,"linesSynced":22}` —
+  correcto, es idempotente (0 creados en una base ya sincronizada).
+- Instalado en el crontab real del servidor cada 15 minutos, **agregado al
+  crontab existente sin tocar las entradas de otros proyectos** (Medisoft,
+  DóndeTa) — se hizo backup automático del crontab anterior
+  (`~/.cache/crontab/crontab.bak`, mecanismo ya provisto por el propio
+  `crontab -`).
+- `scripts/sync-purchase-orders.crontab` queda en el repo solo como
+  **referencia** (plantilla sin la key real) — el crontab real vive
+  únicamente en el servidor porque la línea lleva la anon key inline, igual
+  que ya hace el webhook de Discord de DóndeTa en su propia entrada.
+
+**Nota de rendimiento, no resuelta:** `bc-sync-orders` trae todas las
+órdenes en cada corrida y hace una llamada a BC por orden para sus líneas
+(N+1). Con el volumen de dev (10 órdenes) no es problema; si el tenant real
+llega a las ~798 órdenes que tenía el portal legacy, hay que revisar el
+intervalo o el patrón N+1 antes del corte a producción — documentado en
+`sync-purchase-orders.crontab` para que no se pierda.
+
+**Pendiente:** Días 7-9 completos salvo "mostrar recepciones en el detalle
+de orden", que sigue condicionado a si BC expone `purchaseReceipts` para
+este tenant (Días 1-2, sin confirmar todavía).

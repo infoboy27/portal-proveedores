@@ -48,7 +48,9 @@ Falta cerrar en este bloque:
 - [x] **Confirmación de orden** (Confirmar / Solicitar cambio) en
       `OrderDetail.tsx` — 2026-08-20. Registro solo-portal (`app/schema-v4.sql`),
       nunca escribe a BC directo — ver `BITACORA.md`.
-- Automatizar `bc-sync-orders` con cron/schedule (hoy manual).
+- [x] `bc-sync-orders` automatizada por cron cada 15 min — 2026-08-20, ver
+      `infra/supabase/scripts/` y `BITACORA.md` (incluye nota de rendimiento
+      N+1 a revisar antes de escalar a datos reales de BC).
 - Mostrar recepciones en el detalle de orden, si BC las expone para este
   tenant (Días 1-2 lo determina).
 
