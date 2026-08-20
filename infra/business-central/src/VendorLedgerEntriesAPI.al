@@ -8,7 +8,7 @@
 //
 // URL una vez publicado:
 //   {BC_BASE_URL}/api/adsemble/vendorPortal/v1.0/companies({id})/vendorLedgerEntries
-page 50102 "Adsm Vendor Ledger Entr. API"
+page 58002 "Adsm Vendor Ledger Entr. API"
 {
     PageType = API;
     APIPublisher = 'adsemble';

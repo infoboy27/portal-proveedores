@@ -414,3 +414,28 @@ hizo todo lo automatizable desde su máquina:
 desarrollo (`D365 EXTENSION MGT` o `SUPER` en sandbox) en `Test672026` —
 si no lo tiene, alguien con rol de administrador en BC se lo asigna antes
 de intentar publicar.
+
+---
+
+## 2026-08-20 (continuación 10) — Primer intento de publicación: colisión de IDs
+
+Jonatan corrió `AL: Download Symbols` (exitoso, confirmó versión real del
+entorno: `27.5.0.0` — se corrigió `app.json` que tenía `24.0.0.0` como
+placeholder) y luego `F5` para publicar.
+
+**Falló, y el error fue informativo:** `Test672026` ya tiene instalada
+otra extensión — **"Adsemble Liquid Base" de DYNASOFT SRL, versión
+1.0.0.91** — que ya ocupa parte del rango `50100-50149` (el mismo que se
+le había puesto a esta extensión por default). Colisión en la página
+`50101`.
+
+**Hallazgo relevante para el proyecto:** DYNASOFT SRL parece ser el socio
+de integración de BC del proveedor original (o de un proyecto BC anterior
+de Adsemble) — hay una extensión propia ya viviendo en el tenant, con
+nombre "Adsemble Liquid Base". Vale la pena que Adsemble confirme qué es
+esa extensión y si sigue en uso, antes de asumir que el tenant está
+"limpio" para futuras integraciones.
+
+**Corregido:** rango de IDs movido de `50100-50149` a `58000-58049` (y las
+tres páginas: `58000`, `58001`, `58002`) — mucho menos probable que
+choque con algo ya registrado. Pendiente de que Jonatan reintente `F5`.

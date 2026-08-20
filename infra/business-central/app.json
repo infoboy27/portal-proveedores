@@ -13,11 +13,11 @@
   "dependencies": [],
   "screenshots": [],
   "platform": "1.0.0.0",
-  "application": "24.0.0.0",
+  "application": "27.5.0.0",
   "idRanges": [
     {
-      "from": 50100,
-      "to": 50149
+      "from": 58000,
+      "to": 58049
     }
   ],
   "resourceExposurePolicy": {

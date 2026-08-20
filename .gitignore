@@ -25,6 +25,13 @@ npm-debug.log*
 .idea/
 
 # Excepcion: launch.json de la extension AL es config de proyecto real
-# (apunta al sandbox de BC), no preferencias personales de editor.
+# (apunta al sandbox de BC), no preferencias personales de editor. Todo lo
+# demas que la extension AL deja en esa carpeta (rad.json, cache local) se
+# queda ignorado.
 !infra/business-central/.vscode/
+infra/business-central/.vscode/*
 !infra/business-central/.vscode/launch.json
+
+# Cache de simbolos de referencia de AL (binarios descargados, no fuente)
+infra/business-central/.alpackages/
+*.app

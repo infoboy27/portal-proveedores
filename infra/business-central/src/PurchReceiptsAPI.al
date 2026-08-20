@@ -12,7 +12,7 @@
 // (distinto del prefijo /api/v2.0 que usa el resto de la integracion —
 // _shared/bc-client.ts necesita un baseUrl alternativo para esto, ver
 // infra/business-central/README.md).
-page 50100 "Adsm Purch Receipts API"
+page 58000 "Adsm Purch Receipts API"
 {
     PageType = API;
     APIPublisher = 'adsemble';
@@ -50,7 +50,7 @@ page 50100 "Adsm Purch Receipts API"
     }
 }
 
-page 50101 "Adsm Purch Receipt Lines API"
+page 58001 "Adsm Purch Receipt Lines API"
 {
     PageType = API;
     APIPublisher = 'adsemble';
