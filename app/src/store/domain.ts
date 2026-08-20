@@ -27,6 +27,32 @@ import {
 // Los nombres de columnas siguen exactamente extraido/01-esquema-tablas.md;
 // el mapeo snake_case -> camelCase vive en mappers.ts.
 
+// PostgREST limita cada respuesta a PGRST_DB_MAX_ROWS (1000 en este server).
+// El sandbox de BC ya tiene 3,495 vendors (Produccion: ~32,957) — un
+// `.select("*")` sin paginar deja fuera silenciosamente a todo vendor mas
+// alla del primero 1000, lo que se traduce en nombre de proveedor en blanco
+// ("-") en Ordenes, Facturas y Pagos para cualquier orden cuyo vendor_id cae
+// fuera de esa primera pagina. Encontrado en /qa 2026-08-20 viendo varias
+// filas de /orders sin nombre de proveedor pese a que el JOIN en la base de
+// datos si resuelve el nombre correctamente.
+async function fetchAllRows<T>(table: string): Promise<T[]> {
+  const pageSize = 1000;
+  let allRows: T[] = [];
+  let from = 0;
+  for (;;) {
+    const { data, error } = await supabase
+      .from(table)
+      .select("*")
+      .order("id", { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    allRows = allRows.concat((data ?? []) as T[]);
+    if (!data || data.length < pageSize) break;
+    from += pageSize;
+  }
+  return allRows;
+}
+
 interface DomainStore {
   invoices: Invoice[];
   invoiceLines: InvoiceLine[];
@@ -148,7 +174,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
         ordersRes,
         orderLinesRes,
         receiptsRes,
-        suppliersRes,
+        suppliersRows,
         companiesRes,
         usersRes,
         auditRes,
@@ -158,7 +184,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
         supabase.from("purchase_orders").select("*"),
         supabase.from("purchase_orders_lines").select("*").order("sequence", { ascending: true }),
         supabase.from("purchase_order_receipts").select("*").order("posting_date", { ascending: false }),
-        supabase.from("vendors").select("*"),
+        fetchAllRows<Record<string, unknown>>("vendors"),
         supabase.from("companies").select("*").is("disabled_at", null),
         supabase.from("user_profiles").select("*").order("username", { ascending: true }),
         supabase.from("invoice_status_history").select("*").order("changed_at", { ascending: false }).limit(100),
@@ -170,7 +196,6 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
         ordersRes.error ??
         orderLinesRes.error ??
         receiptsRes.error ??
-        suppliersRes.error ??
         companiesRes.error ??
         usersRes.error ??
         auditRes.error;
@@ -182,7 +207,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
         purchaseOrders: (ordersRes.data ?? []).map(mapPurchaseOrder),
         purchaseOrderLines: (orderLinesRes.data ?? []).map(mapPurchaseOrderLine),
         purchaseOrderReceipts: (receiptsRes.data ?? []).map(mapPurchaseOrderReceipt),
-        suppliers: (suppliersRes.data ?? []).map(mapSupplier),
+        suppliers: suppliersRows.map(mapSupplier),
         companies: (companiesRes.data ?? []).map(mapCompany),
         users: (usersRes.data ?? []).map(mapUser),
         auditEvents: (auditRes.data ?? []).map(mapAuditEvent),
