@@ -315,3 +315,34 @@ existía.
 dominio — ambos requieren coordinación directa con Adsemble (acceso a un
 proveedor real de prueba, decisión de fecha de corte), no son tareas que
 se puedan cerrar solo en el código.
+
+---
+
+## 2026-08-20 (continuación 7) — QA de paridad contra los 8 bugs conocidos
+
+Revisión de los 8 bugs documentados en `extraido/02-rutas-y-modulos.md`
+(observados en el portal legacy) contra el código real del rewrite, uno
+por uno. No es una prueba visual en navegador — es lectura de código con
+verificación de datos reales donde aplicó.
+
+| # | Bug legacy | Estado en el rewrite |
+|---|---|---|
+| 1 | KPI "Usuarios gestionados" no coincide con `/users` | **No se reproduce** — `Dashboard.tsx` y `Users.tsx` usan la misma regla de alcance (`isAdmin ? todos : por empresa`), así que siempre coinciden para la misma sesión. Sí hay un `isAdmin \|\|` muerto en el filtro de `Dashboard.tsx` (ese bloque solo se renderiza cuando `isAdmin` ya es `true`, así que la condición es vestigial) — cosmético en el código, no un bug visible para el usuario |
+| 2 | Auditoría: "Factura vinculada a la orden ." (número faltante) | **No se reproduce, pero tampoco se corrigió igual** — el mensaje original completo ("...vinculada a la orden X") se eliminó del rewrite; `Audit.tsx` solo muestra "Factura {número}", nunca menciona la orden. La clave de texto `invoiceUploadedAuditLinked` sigue en `es.json` pero **no se usa en ningún componente** (confirmado por grep). Es simplificación, no reparación — se perdió información que el original sí daba |
+| 3 | Proveedores: 4ª tarjeta de estadística sin título | **Confirmado y corregido ahora**: `Suppliers.tsx` referenciaba `t("suppliersWithEmail")`, clave que no existía en `es.json` ni `en.json` — el fallback de `useTranslation` devuelve la clave cruda, así que la tarjeta mostraba literalmente el texto `suppliersWithEmail`. Agregada la traducción ("Con correo registrado") |
+| 4 | NCF extraído igual al número de factura | **Corregido de verdad** — `ocr-service/app.py` tiene regex específico para NCF (`[A-Z]\d{10,12}`, con patrón preferente cerca de la etiqueta "NCF"/"Comprobante Fiscal"), no reutiliza el número de factura. Además nunca pisa un valor ya cargado a mano |
+| 5 | Líneas de orden "SIN DATOS" | **Corregido** (ya confirmado en la auditoría inicial) — `bc-sync-orders` sí trae las líneas reales desde BC |
+| 6 | Aprobaciones: texto de estado vacío se corta a la derecha | **No verificable sin navegador** — el markup actual (`Approvals.tsx`) usa una celda de tabla centrada con `overflow-x-auto` en el contenedor padre, estructuralmente no debería reproducir un overflow, pero esto es una hipótesis de lectura de código, no una prueba visual real |
+| 7 | Empresas: muestra el GUID crudo de BC como "Código" | **Confirmado y corregido ahora**: `CompanyDetail` (`Companies.tsx`) mostraba `row.company.id.slice(0, 8)` — el UUID interno de Postgres (la PK de nuestra tabla `companies`), no el campo `bc_code` que existe justo para esto. Cambiado a `row.company.bcCode`. **Matiz**: el `bc_code` real de la empresa sembrada también es un GUID (`6a763343-...`, el `SystemId` de BC) — BC no siempre expone un código corto legible por empresa, así que esto puede seguir viéndose "como un GUID" aunque ahora sea el campo correcto en vez de uno accidental |
+| 8 | Sin acentos ortográficos en toda la UI | **No corregido, sigue igual** — `es.json` sigue mayormente sin tildes ("Ordenes", "aprobacion", etc.). Nunca estuvo en el alcance de los 15 días comprometidos; es trabajo de pulido pendiente, no bloqueante |
+
+**Resumen:** de los 8, 2 estaban genuinamente resueltos ya (#4, #5), 2 se
+reprodujeron y se corrigieron en esta sesión (#3, #7), 1 se "resolvió"
+quitando la funcionalidad en vez de arreglarla (#2, información perdida),
+1 no se reproduce pero tiene código vestigial (#1), 1 no es verificable
+sin navegador real (#6), y 1 nunca se abordó porque no era parte del
+alcance comprometido (#8).
+
+**Pendiente:** #6 necesita una pasada real en navegador (no solo lectura
+de código) para confirmar. #2 y #8 son mejoras de calidad que Adsemble
+puede priorizar o no — no son bloqueantes para el arranque.

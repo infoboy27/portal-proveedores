@@ -85,9 +85,13 @@ Falta cerrar en este bloque:
 
 ## Bugs legacy conocidos (heredados del portal anterior)
 
-Documentados en `extraido/02-rutas-y-modulos.md`. El rewrite ya corrige el
-más grave (líneas de orden "SIN DATOS"). Falta una pasada de QA explícita
-que confirme uno por uno los demás (KPI de usuarios gestionados, tarjeta de
-proveedores sin título, overflow en estado vacío de aprobaciones, código de
-empresa mostrando el GUID crudo de BC, acentos en español) contra la UI
-actual — no se ha hecho esa verificación todavía.
+[x] QA hecha — 2026-08-20, ver `BITACORA.md`. De los 8 documentados en
+`extraido/02-rutas-y-modulos.md`: 2 ya estaban resueltos (líneas de orden,
+NCF), 2 se reprodujeron y se corrigieron en esta pasada (tarjeta de
+proveedores sin título, código de empresa mostrando el GUID interno en vez
+de `bc_code`), 1 se "resolvió" quitando la funcionalidad en vez de
+arreglarla (mensaje de auditoría sin número de orden — pendiente si
+Adsemble lo quiere de vuelta), 1 sin reproducir pero con código vestigial
+(KPI de dashboard), 1 sin verificar (overflow en Aprobaciones — necesita
+navegador real, no solo lectura de código), y los acentos en español
+siguen sin abordar (nunca estuvo en el alcance de los 15 días).

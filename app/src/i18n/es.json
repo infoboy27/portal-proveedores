@@ -149,6 +149,7 @@
   "suppliersListDescription": "Lista operativa de proveedores sincronizados.",
   "searchSuppliersPlaceholder": "Buscar proveedor, numero o correo",
   "showingSuppliersRange": "Mostrando {from}-{to} de {total} proveedores",
+  "suppliersWithEmail": "Con correo registrado",
   "totalSuppliers": "Total proveedores",
   "activeSuppliers": "Activos",
   "blockedSuppliers": "Bloqueados",

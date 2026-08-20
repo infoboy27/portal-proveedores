@@ -195,7 +195,7 @@ export function CompanyDetail() {
               {row.health === "attention" ? t("requiresAttention") : t("operational")}
             </span>
             <span className="rounded-full bg-white/10 px-2.5 py-1 text-xs font-semibold text-white/85">
-              {t("companyCode")} {row.company.id.slice(0, 8)}
+              {t("companyCode")} {row.company.bcCode ?? t("notAvailable")}
             </span>
           </div>
           <h1 className="mt-3 text-2xl font-semibold sm:text-3xl">{row.company.name}</h1>
