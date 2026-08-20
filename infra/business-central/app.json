@@ -1,0 +1,29 @@
+{
+  "id": "8f1e6a2c-3c9a-4e2b-9b7a-adsemble0001",
+  "name": "Adsemble Vendor Portal API Extensions",
+  "publisher": "Adsemble",
+  "version": "1.0.0.0",
+  "brief": "Custom API pages needed by the self-hosted Vendor Portal (proveedores.jfmcss.com): posted purchase receipts and vendor ledger entries.",
+  "description": "The standard Business Central API v2.0 does not expose posted purchase receipts or vendor ledger entries for this tenant. This extension adds two read-only Custom API pages so the portal can show receipts against a purchase order and payment status / account statement.",
+  "privacyStatement": "",
+  "EULA": "",
+  "help": "",
+  "url": "",
+  "logo": "",
+  "dependencies": [],
+  "screenshots": [],
+  "platform": "1.0.0.0",
+  "application": "24.0.0.0",
+  "idRanges": [
+    {
+      "from": 50100,
+      "to": 50149
+    }
+  ],
+  "resourceExposurePolicy": {
+    "allowDebugging": true,
+    "allowDownloadingSource": true,
+    "includeSourceInSymbolFile": true
+  },
+  "runtime": "13.0"
+}

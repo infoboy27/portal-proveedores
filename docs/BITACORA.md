@@ -346,3 +346,45 @@ alcance comprometido (#8).
 **Pendiente:** #6 necesita una pasada real en navegador (no solo lectura
 de código) para confirmar. #2 y #8 son mejoras de calidad que Adsemble
 puede priorizar o no — no son bloqueantes para el arranque.
+
+---
+
+## 2026-08-20 (continuación 8) — Código AL para los endpoints de BC que faltan
+
+Jonatan compartió una captura del **Business Central Admin Center**
+(logueado como `w.deschamps@adsemble.do`, entornos `Production`,
+`Test_ModuloProyectos`, `Test672026`) preguntando si puede crear él mismo
+los endpoints de BC que faltan.
+
+**Respuesta:** el Admin Center administra entornos (actualizaciones,
+capacidad, apps de Entra ID) pero **no alcanza** para publicar Custom API
+pages — eso requiere VS Code + extensión "AL Language" + un usuario con
+permisos de desarrollo en el entorno (distinto del acceso al Admin
+Center). Es alcanzable, no es una integración compleja.
+
+**Hecho:** escrito el código AL completo de las dos Custom API pages que
+cierran los bloqueos reales de integración (`infra/business-central/`):
+
+- `purchaseReceipts`/`purchaseReceiptLines` (recepciones de compra) —
+  necesario para mostrar recepciones en el detalle de orden.
+- `vendorLedgerEntries` (movimientos de cuentas por pagar) — bloqueante
+  real para "consulta de pagos y estado de cuenta" comprometido a
+  Adsemble; hoy `/payments` solo puede mostrar el estado de pago manual.
+
+Ambas de solo lectura. `README.md` en la misma carpeta documenta paso a
+paso cómo publicar (requisitos, comandos de VS Code, cómo crear el
+permission set, y la advertencia de verificar los nombres de campo contra
+el sandbox real antes de confiar en esto — no se verificaron contra el
+tenant de Adsemble, solo son los nombres estándar de la app base de BC).
+
+**No se tocó `bc-client.ts` todavía** — las Custom API pages usan un
+prefijo de URL distinto (`/api/adsemble/vendorPortal/v1.0/...`) al que usa
+hoy el resto de la integración (`/api/v2.0/...`). Cablear el cliente es el
+siguiente paso, pero no tiene sentido hacerlo antes de que la extensión
+esté publicada y confirmada en el sandbox — documentado en el README de la
+extensión para no perderlo.
+
+**Pendiente:** que alguien con AL Language + permisos de desarrollo en
+`Test672026` publique la extensión, verifique los nombres de campo contra
+el sandbox real, y confirme que responde — recién ahí se cablea
+`bc-client.ts` para consumirla.
