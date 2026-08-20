@@ -240,3 +240,29 @@ scope creep — sin un campo de monto no había nada que validar.
 **Pendiente de Días 10-13:** SMTP real — sigue en el mailer fake de
 desarrollo, necesita credenciales de un proveedor real que solo Jonatan
 puede definir (no hay nada que inventar aquí).
+
+---
+
+## 2026-08-20 (continuación 5) — SMTP real (Microsoft 365)
+
+**Hecho:**
+- Adsemble usa Microsoft 365 como correo corporativo. Jonatan proporcionó
+  buzón (`soporte@adsemble.do`) y contraseña de aplicación (SMTP AUTH
+  habilitado del lado de Adsemble para ese buzón).
+- `supabase/.env` (solo en el servidor, nunca en git — ya estaba en
+  `.gitignore`) actualizado: `SMTP_HOST=smtp.office365.com`,
+  `SMTP_PORT=587`, `SMTP_USER`/`SMTP_ADMIN_EMAIL=soporte@adsemble.do`,
+  `SMTP_SENDER_NAME=Portal de Proveedores Adsemble`. Contenedor
+  `supabase-auth` recreado con `sh run.sh recreate auth` para tomar las
+  variables nuevas.
+- **Probado con dos envíos reales**: (1) `POST /auth/v1/recover` para
+  `c.cuevas@adsemble.do` — 200, sin errores, ~3.6s de duración (consistente
+  con un round-trip SMTP real, no el mailer fake que respondía en
+  milisegundos); (2) `POST /auth/v1/invite` (Admin API, service_role) a
+  `jmservicedo@gmail.com` — **confirmado visualmente por Jonatan: el
+  correo de invitación llegó**. Usuario de prueba creado por el invite
+  borrado después de confirmar (`DELETE /auth/v1/admin/users/{id}`), no
+  queda cruft en `auth.users`.
+
+**Con esto, Días 10-13 del compromiso quedan completos — confirmado
+end-to-end, no solo por ausencia de errores en el log.**

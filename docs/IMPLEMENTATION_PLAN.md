@@ -61,10 +61,9 @@ Falta cerrar en este bloque:
       vinculada — 2026-08-20, ver `BITACORA.md`. Cantidad por línea queda
       fuera de alcance porque no existe formulario de líneas de factura en
       este rebuild (documentado en el código, no es un olvido).
-- SMTP real (hoy: mailer fake de desarrollo `supabase-mail`) para que
-  aprobación/rechazo y credenciales de acceso lleguen de verdad. **Necesita
-  credenciales de un proveedor SMTP real de Jonatan/Adsemble antes de
-  poder avanzar.**
+- [x] SMTP real (Microsoft 365, `soporte@adsemble.do`) — 2026-08-20,
+      confirmado con un envío real recibido y verificado visualmente. Ver
+      `BITACORA.md`. **Días 10-13 completos.**
 - QA del flujo completo carga → aprobación → export a BC, contra un caso
   real (no solo sandbox).
 
