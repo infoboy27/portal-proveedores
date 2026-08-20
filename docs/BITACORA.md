@@ -439,3 +439,32 @@ esa extensión y si sigue en uso, antes de asumir que el tenant está
 **Corregido:** rango de IDs movido de `50100-50149` a `58000-58049` (y las
 tres páginas: `58000`, `58001`, `58002`) — mucho menos probable que
 choque con algo ya registrado. Pendiente de que Jonatan reintente `F5`.
+
+---
+
+## 2026-08-20 (continuación 11) — Publicación exitosa y endpoints confirmados
+
+`F5` publicó sin errores: `"Success: The package ... has been published
+to the server."` Extensión instalada en `Test672026`.
+
+**Probado end-to-end inmediatamente** con las credenciales de servicio
+que ya usa el resto de la integración (`BC_CLIENT_ID`/`BC_CLIENT_SECRET`
+de `supabase/.env`, mismo flujo OAuth2 client-credentials de
+`_shared/bc-client.ts`):
+
+```
+GET /api/adsemble/vendorPortal/v1.0/companies({id})/purchaseReceipts     -> HTTP 200, datos reales (CR-000001, CR-000002, ...)
+GET /api/adsemble/vendorPortal/v1.0/companies({id})/vendorLedgerEntries -> HTTP 200, datos reales
+```
+
+**No hizo falta crear un permission set aparte** — las credenciales de
+servicio ya tenían acceso suficiente. Los dos bloqueos reales de
+integración con BC que quedaban (recepciones + estado de cuenta) están
+**cerrados del lado de BC**.
+
+**Pendiente:** cablear `_shared/bc-client.ts` para que use el prefijo
+`/api/adsemble/vendorPortal/v1.0/` (hoy solo conoce `/api/v2.0/`), y
+construir sobre eso: mostrar recepciones en el detalle de orden, y
+reemplazar el estado de pago manual de `/payments` por datos reales de
+`vendorLedgerEntries` — el trabajo de aplicación que quedaba condicionado
+a esta confirmación.
