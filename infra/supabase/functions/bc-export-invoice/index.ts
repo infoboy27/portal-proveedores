@@ -104,6 +104,13 @@ Deno.serve(async (req: Request) => {
     });
 
     // 2. Copiar lineas de la PO (guardadas por bc-sync-orders) a la factura.
+    // Si una linea no tiene bc_line_object_number (ej. una linea tipo
+    // "Account" creada en BC sin cuenta contable real asignada) no se puede
+    // replicar en BC y se omite — pero si TODAS se omiten, la factura queda
+    // creada en BC con monto RD$0.00 y sin vinculo real a la orden, y sin
+    // esta verificacion el export se marcaba "processed" como si hubiera
+    // funcionado. Encontrado en /qa 2026-08-20 exportando una factura real.
+    let copiedLines = 0;
     for (const line of lines ?? []) {
       if (!line.bc_line_type || !line.bc_line_object_number) continue;
       await bcPost(`/purchaseInvoices(${created.id})/purchaseInvoiceLines`, {
@@ -113,6 +120,12 @@ Deno.serve(async (req: Request) => {
         quantity: line.quantity,
         unitCost: line.bc_unit_cost,
       });
+      copiedLines += 1;
+    }
+    if ((lines ?? []).length > 0 && copiedLines === 0) {
+      throw new Error(
+        `La orden tiene ${lines?.length} linea(s) pero ninguna tiene un numero de cuenta/item valido en Business Central (bc_line_object_number vacio) — la factura ${created.number} se creo en BC pero sin lineas, hay que corregirla o eliminarla ahi manualmente`,
+      );
     }
 
     // 3. Adjuntar el PDF de la factura, si ya fue subido a Storage.
