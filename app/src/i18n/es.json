@@ -65,6 +65,7 @@
   "lineAmount": "Importe linea",
   "invoiceTotalLabel": "Total de la factura",
   "paymentsTitle": "Pagos",
+  "securityTitle": "Seguridad",
   "confirmationSectionTitle": "Confirmacion de la orden",
   "confirmationSectionDescription": "Confirma la orden tal como esta, o solicita un cambio antes de facturar contra ella.",
   "confirmationStatusLabel": "Estado de confirmacion",

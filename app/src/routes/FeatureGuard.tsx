@@ -7,6 +7,10 @@ import { useSessionStore } from "@/store/session";
 // Ver: Portal-proveedores/PLAN-RECONSTRUCCION.md, seccion "Sistema de permisos".
 
 export const ROLE_FEATURES: Record<string, string[]> = {
+  // "security.manage" es la primera capacidad real que distingue superadmin
+  // de admin (2026-08-20) — antes eran identicos en todo el codigo. Ver
+  // docs/BITACORA.md: Jonatan pidio un superusuario real para incidencias
+  // tras el incidente de los 26 proveedores invitados por error.
   superadmin: [
     "orders.read",
     "invoices.read",
@@ -17,6 +21,7 @@ export const ROLE_FEATURES: Record<string, string[]> = {
     "companies.manage",
     "users.manage",
     "suppliers.manage",
+    "security.manage",
   ],
   admin: [
     "orders.read",

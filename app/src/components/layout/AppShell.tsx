@@ -17,6 +17,7 @@ const NAV_ITEMS: { to: string; labelKey: string; feature?: string }[] = [
   { to: "/companies", labelKey: "companiesTitle", feature: "companies.manage" },
   { to: "/users", labelKey: "users", feature: "users.manage" },
   { to: "/suppliers", labelKey: "suppliers", feature: "suppliers.manage" },
+  { to: "/security", labelKey: "securityTitle", feature: "security.manage" },
 ];
 
 // Equivalente a `rx` (shell) en el bundle original.

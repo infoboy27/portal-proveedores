@@ -511,6 +511,80 @@ pequeños, no de una vez.
 
 ---
 
+## 2026-08-20 (continuación 15) — Superadmin real + panel de seguridad/incidencias
+
+Jonatan preguntó cómo se manejan los roles/incidencias y si debería haber
+un superusuario para eso. Se verificó contra el código (no de memoria):
+**`admin` y `superadmin` eran exactamente el mismo rol** — en los 9+
+lugares donde el código pregunta "¿es administrador?", siempre los trata
+igual. `superadmin` era solo un nombre en la base de datos sin ninguna
+capacidad extra. Tampoco existía ningún registro de seguridad — el único
+"audit" (`Audit.tsx`) es el historial de estados de factura, no rastrea
+logins, cambios de rol, ni cuentas creadas/borradas. El incidente de los
+26 proveedores (continuación anterior) lo resolví yo por fuera de la app,
+con la clave de servicio, porque no había ninguna herramienta para eso
+adentro.
+
+**Hallazgo antes de construir nada**: Supabase Auth (GoTrue) **ya registra
+solo** cada login/logout/cambio de contraseña en `auth.audit_log_entries`
+— no hizo falta reconstruir eso. Lo que sí faltaba era (1) un registro de
+qué **admin** hizo qué acción de negocio (invitar, cambiar rol, desactivar,
+eliminar) — GoTrue ve el actor de esas acciones como `service_role`, no
+como el admin humano que hizo clic en la app — y (2) una forma de
+exponer ambos registros solo a `superadmin`.
+
+**Construido** (`app/schema-v9.sql`):
+- `security_audit_log` — tabla nueva, eventos de negocio
+  (`user_invited`/`user_role_changed`/`user_deactivated`/`user_reactivated`/`user_deleted`),
+  quién lo hizo, sobre quién, antes/después. RLS: solo `superadmin` puede leer.
+- `rpc_update_user_profile` — reemplaza el `UPDATE` directo que hacía
+  `domain.ts:updateUser` (sin auditoría, sin saber quién lo hizo). Ahora
+  registra el evento con el admin real que lo pidió.
+- `rpc_recent_auth_events` — expone `auth.audit_log_entries` (que no tiene
+  políticas RLS propias — deny-all para `authenticated`) de forma
+  controlada, exclusivo de `superadmin`.
+- `delete-user` (Edge Function nueva) — baja definitiva de cuenta, **exclusiva
+  de `superadmin`** (no de `admin`) — es la primera capacidad real que
+  distingue a los dos roles. Registra el evento antes de borrar (para que
+  quede el registro aunque el usuario objetivo desaparezca).
+- `_shared/provision-user.ts` ahora recibe `actorUserId` opcional y registra
+  `user_invited` — `invite-user` pasa el admin real que invitó;
+  `bc-sync-vendors` pasa `null` (queda marcado como automático, no un dato
+  faltante).
+- `security.manage` agregado a `ROLE_FEATURES` **solo para `superadmin`**
+  en `FeatureGuard.tsx` — la primera vez que el arreglo de permisos de
+  `admin` y `superadmin` se separan.
+- `Security.tsx` (`/security`, nav "Seguridad", solo visible para
+  `superadmin`): dos tablas — "Acciones administrativas" (nuestro log de
+  negocio) y "Sesiones" (login/logout real de GoTrue). No pasa por el
+  domain store (`fetchAll`) a propósito — es sensible y de un solo rol,
+  no tiene sentido pre-cargarlo para todas las sesiones.
+- `Users.tsx`: botón "Eliminar" (con modal de confirmación, no
+  `window.confirm`) visible solo para `superadmin`, y nunca sobre la
+  propia cuenta.
+
+**Probado antes de desplegar** (transacciones simuladas, revertidas):
+`rpc_recent_auth_events` rechaza a un `admin` (c.cuevas) con error
+explícito, funciona para `superadmin` (jonatan) y devuelve datos reales de
+login. `rpc_update_user_profile` escribe correctamente y clasifica el
+evento (`user_deactivated` al pasar de activo a inactivo).
+
+**Probado en navegador después de desplegar**: login como superadmin →
+"Seguridad" aparece en el menú → se editó el estado de `sugopeca` (Editar
+→ desactivar → Guardar) → apareció de inmediato en "Acciones
+administrativas" con fecha/hora real. Un efecto secundario notado: la
+lista de `Users.tsx` no tiene un orden estable entre cargas (no hay
+`ORDER BY` en la query) — un clic en la fila equivocada por reordenamiento
+casi desactiva la cuenta incorrecta (no pasó nada malo, se verificó y
+corrigió), pero vale la pena agregar un `order by username` a la query
+como mejora de calidad, no urgente.
+
+**Con esto: `admin` y `superadmin` ya son roles genuinamente distintos, y
+hay una forma real de investigar/responder incidencias desde adentro de
+la aplicación — no solo por mí con acceso directo al servidor.**
+
+---
+
 ## 2026-08-20 (continuación 10) — Primer intento de publicación: colisión de IDs
 
 Jonatan corrió `AL: Download Symbols` (exitoso, confirmó versión real del

@@ -18,6 +18,10 @@ export interface ProvisionUserInput {
   vendorId?: string | null;
   username?: string;
   siteUrl?: string;
+  // Quien lo pidio -- null cuando lo dispara la sync de BC (bc-sync-vendors),
+  // no un admin humano. Se registra en security_audit_log de cualquier forma;
+  // el actor null es la senal de "automatico", no un dato faltante.
+  actorUserId?: string | null;
 }
 
 export interface ProvisionUserResult {
@@ -61,6 +65,14 @@ export async function provisionInvitedUser(db: SupabaseClient<any>, input: Provi
       console.error(`user_vendor_mapping insert fallo para ${invited.user.id}/${input.vendorId}: ${mapErr.message}`);
     }
   }
+
+  await db.from("security_audit_log").insert({
+    event_type: "user_invited",
+    actor_user_id: input.actorUserId ?? null,
+    target_user_id: invited.user.id,
+    target_email: email,
+    detail: { role: input.role, vendorId: input.vendorId ?? null, companyId: input.companyId ?? null },
+  });
 
   return { ok: true, userId: invited.user.id };
 }

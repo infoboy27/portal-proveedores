@@ -81,6 +81,7 @@ Deno.serve(async (req: Request) => {
     vendorId: body.vendorId,
     username: body.username,
     siteUrl: Deno.env.get("SITE_URL") ?? undefined,
+    actorUserId: callerAuth.user.id,
   });
 
   return new Response(JSON.stringify(result), {

@@ -84,7 +84,19 @@ interface DomainStore {
   // Function propia que reciba el JWT del admin, valide el rol server-side,
   // y llame a la Admin API. Aqui solo se gestiona la fila de user_profiles
   // para un auth.users que ya exista (p.ej. creado por invitacion).
-  updateUser: (userId: string, patch: { role: PortalUser["role"]; companyId: string | null; isActive: boolean }) => Promise<void>;
+  // Dias 20-08: pasa por rpc_update_user_profile (SECURITY DEFINER) en vez
+  // de un UPDATE directo -- registra el cambio en security_audit_log
+  // (quien lo hizo, antes/despues). changedBy es el admin que lo pide,
+  // nunca se infiere del lado del cliente.
+  updateUser: (
+    userId: string,
+    changedBy: string,
+    patch: { role: PortalUser["role"]; companyId: string | null; isActive: boolean },
+  ) => Promise<void>;
+  // Baja definitiva de cuenta -- exclusivo de superadmin (invite-user
+  // Edge Function lo revalida server-side). Primera capacidad real que
+  // distingue superadmin de admin.
+  deleteUser: (userId: string) => Promise<void>;
   // Onboarding real (2026-08-20): invita un login nuevo de verdad, via la
   // Edge Function invite-user (Admin API + user_profiles + user_vendor_mapping
   // en una sola llamada). Reemplaza el placeholder anterior donde "Crear
@@ -148,7 +160,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
         supabase.from("purchase_order_receipts").select("*").order("posting_date", { ascending: false }),
         supabase.from("vendors").select("*"),
         supabase.from("companies").select("*").is("disabled_at", null),
-        supabase.from("user_profiles").select("*"),
+        supabase.from("user_profiles").select("*").order("username", { ascending: true }),
         supabase.from("invoice_status_history").select("*").order("changed_at", { ascending: false }).limit(100),
       ]);
 
@@ -366,12 +378,22 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     await get().fetchAll();
   },
 
-  async updateUser(userId, patch) {
-    const { error } = await supabase
-      .from("user_profiles")
-      .update({ role: patch.role, company_id: patch.companyId, active: patch.isActive })
-      .eq("id", userId);
+  async updateUser(userId, changedBy, patch) {
+    const { error } = await supabase.rpc("rpc_update_user_profile", {
+      p_target_user_id: userId,
+      p_changed_by: changedBy,
+      p_role: patch.role,
+      p_company_id: patch.companyId,
+      p_active: patch.isActive,
+    });
     if (error) throw error;
+    await get().fetchAll();
+  },
+
+  async deleteUser(userId) {
+    const { data, error } = await supabase.functions.invoke("delete-user", { body: { userId } });
+    if (error) throw error;
+    if (!data?.ok) throw new Error(data?.error ?? "No se pudo eliminar el usuario");
     await get().fetchAll();
   },
 }));

@@ -18,17 +18,13 @@ const ROLE_LABEL: Record<UserRole, string> = {
 };
 
 // Reconstruccion de `function VP()` — index-beautified.js:30017.
-// Simplificado respecto al original: el bundle usa react-hook-form + zod y
-// un flujo completo de creacion (nombre, email, password, limite de
-// aprobacion). Aqui se gestiona solo el `user_profiles` de un usuario que ya
-// existe en auth.users — crear la cuenta de auth real (password incluida)
-// requiere una Edge Function con la Admin API (service_role), que no puede
-// invocarse de forma segura desde el navegador con la clave anon. Ver nota
-// en store/domain.ts (updateUser).
 // "Crear usuario" invita de verdad (2026-08-20, ver invite-user Edge
 // Function) — antes de esto solo se podia editar un perfil ya existente,
 // porque crear el login real necesita la Admin API (service_role), que no
 // se puede invocar de forma segura desde el navegador con la clave anon.
+// "Eliminar" es exclusivo de superadmin -- primera capacidad que distingue
+// de verdad ese rol de admin (ver docs/BITACORA.md, pedido de Jonatan de
+// tener un superusuario real para incidencias).
 export function Users() {
   const { t } = useTranslation();
   const session = useSessionStore((s) => s.session);
@@ -36,14 +32,18 @@ export function Users() {
   const suppliers = useDomainStore((s) => s.suppliers);
   const updateUser = useDomainStore((s) => s.updateUser);
   const createUser = useDomainStore((s) => s.createUser);
+  const deleteUser = useDomainStore((s) => s.deleteUser);
 
   const isAdmin = session.role === "admin" || session.role === "superadmin";
+  const isSuperadmin = session.role === "superadmin";
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<UserRole | "all">("all");
   const [editing, setEditing] = useState<PortalUser | null>(null);
+  const [deleting, setDeleting] = useState<PortalUser | null>(null);
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const scoped = useMemo(() => (isAdmin ? users : users.filter((u) => u.companyId === session.companyId)), [isAdmin, users, session.companyId]);
 
@@ -57,11 +57,25 @@ export function Users() {
   }, [scoped, search, roleFilter]);
 
   async function handleSave(role: UserRole, companyId: string, isActive: boolean) {
-    if (!editing) return;
+    if (!editing || !session.userId) return;
     setSaving(true);
     try {
-      await updateUser(editing.id, { role, companyId: companyId || null, isActive });
+      await updateUser(editing.id, session.userId, { role, companyId: companyId || null, isActive });
       setEditing(null);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!deleting) return;
+    setDeleteError(null);
+    setSaving(true);
+    try {
+      await deleteUser(deleting.id);
+      setDeleting(null);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "No fue posible eliminar el usuario.");
     } finally {
       setSaving(false);
     }
@@ -148,6 +162,11 @@ export function Users() {
                           Editar
                         </Button>
                       )}
+                      {isSuperadmin && u.id !== session.userId && (
+                        <Button variant="ghost" onClick={() => setDeleting(u)}>
+                          Eliminar
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 ))
@@ -193,6 +212,41 @@ export function Users() {
           }}
           onCreate={handleCreate}
         />
+      </Modal>
+
+      <Modal
+        open={!!deleting}
+        onClose={() => {
+          setDeleting(null);
+          setDeleteError(null);
+        }}
+        title="Eliminar usuario"
+      >
+        {deleting && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-700">
+              Vas a eliminar la cuenta de <strong>{deleting.email}</strong>. Esta acción no se puede deshacer — la
+              persona ya no podrá iniciar sesión.
+            </p>
+            {deleteError && <p className="text-sm text-rose-600">{deleteError}</p>}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setDeleting(null);
+                  setDeleteError(null);
+                }}
+                disabled={saving}
+              >
+                Cancelar
+              </Button>
+              <Button type="button" variant="danger" onClick={handleDelete} disabled={saving}>
+                {saving ? "Eliminando..." : "Eliminar definitivamente"}
+              </Button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

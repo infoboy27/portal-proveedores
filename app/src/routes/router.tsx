@@ -13,6 +13,7 @@ import { Audit } from "@/pages/Audit";
 import { CompaniesList, CompanyDetail } from "@/pages/Companies";
 import { Users } from "@/pages/Users";
 import { Suppliers } from "@/pages/Suppliers";
+import { Security } from "@/pages/Security";
 
 // Replica la estructura de `function GP()` del bundle original:
 // rutas publicas + rutas privadas agrupadas por requiredFeature.
@@ -70,6 +71,10 @@ export const router = createBrowserRouter([
           {
             element: <FeatureGuard requiredFeature="suppliers.manage" />,
             children: [{ path: "suppliers", element: <Suppliers /> }],
+          },
+          {
+            element: <FeatureGuard requiredFeature="security.manage" />,
+            children: [{ path: "security", element: <Security /> }],
           },
         ],
       },
