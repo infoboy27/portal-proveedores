@@ -503,6 +503,60 @@ match de pagos con una factura realmente posteada en BC.
 
 ---
 
+## 2026-08-20 (continuación 13) — Acceso, proveedor de prueba real, y setup de UAT
+
+Jonatan pidió: (1) un usuario para entrar al portal ya construido, (2)
+confirmar si su proveedor personal (Jonatan Francisco Maria Castro /
+JFMC Smart Services) existe para poder probar, (3) explicación de n8n.
+
+**Accesos creados** (Admin API, password directo, sin flujo de invitación):
+- `jonathanmaria@gmail.com` — rol `superadmin`.
+- `jonathanmaria+proveedor@gmail.com` — rol `supplier`, mapeado al
+  proveedor de prueba (ver abajo).
+
+**Búsqueda del proveedor — hallazgo real**: ni "Jonatan Francisco Maria
+Castro" ni "JFMC Smart Services" existen en el sandbox `Test672026` (se
+probó por nombre y por RNC `00118863612`). **El sandbox solo tiene 3,492
+proveedores**, muy por debajo de los ~32,957 que menciona el informe
+original de Adsemble — esa cifra es de Producción, no del sandbox.
+Confirmado con las mismas credenciales de servicio (sí tienen acceso a
+Production, mismo tenant): el proveedor real existe ahí —
+**`PROV-003735`, RNC `00118863612`, no bloqueado** — pero Production y el
+sandbox no están sincronizados uno a uno (Production tiene 3,588
+proveedores, ligeramente distinto también).
+
+**Decisión de Jonatan**: crear el proveedor en el sandbox en vez de
+esperar una resincronización o apuntar la integración a Production.
+Creado `PROV-000278` (mismo nombre/RNC que el real, ID interno distinto,
+válido solo para pruebas) vía API estándar de `vendors`, más su fila
+correspondiente en `vendors`/`user_vendor_mapping` de Supabase.
+
+**Bloqueo real encontrado al intentar crear una orden de compra para
+probar el flujo completo**: BC exige `Gen. Bus. Posting Group` en el
+vendor antes de aceptar una orden, y **ese campo no está expuesto en la
+API estándar de `vendors`**. Jonatan pidió resolverlo con AL en vez de
+configurarlo a mano — se agregó `src/VendorPostingSetupAPI.al` (Custom
+API page, `vendorPostingSetups`, solo estos dos campos, editable) a la
+misma extensión ya publicada. Publicada con un segundo `F5` sin
+fricción. Se leyeron los valores reales de un vendor existente
+(`NACGRDO`/`CPPROV`) y se aplicaron al de prueba vía `PATCH`.
+
+**Segundo bloqueo real, en la línea de la orden**: los ítems del catálogo
+de BC (`AR-001`, `AR-002`, `AR-003`) tienen una unidad de medida ("UD")
+que no está registrada como `Item Unit of Measure` válida — error de
+datos maestros de BC, no de nuestra integración. Evitado usando una línea
+tipo `Account` (cuenta contable) en vez de `Item`, que no depende de esa
+relación. Documentado aquí para no repetir la búsqueda si vuelve a pasar.
+
+**Resultado final**: orden `CP-000211` (RD$5,000, línea "Servicio de
+prueba UAT") creada en BC, sincronizada al portal (`bc-sync-orders`
+corrido manualmente, `created: 1`), visible y correctamente vinculada al
+proveedor de prueba (`PROV-000278`) en Supabase. **El UAT ya se puede
+correr de punta a punta**: login como proveedor → confirmar orden →
+cargar factura → login como admin → aprobar → exportar a BC.
+
+---
+
 ## 2026-08-20 (continuación 11) — Publicación exitosa y endpoints confirmados
 
 `F5` publicó sin errores: `"Success: The package ... has been published
