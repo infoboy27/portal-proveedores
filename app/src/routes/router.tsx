@@ -6,6 +6,7 @@ import { Dashboard } from "@/pages/Dashboard";
 import { OrdersList, OrderDetail } from "@/pages/Orders";
 import { InvoicesList, InvoiceDetail } from "@/pages/Invoices";
 import { Approvals } from "@/pages/Approvals";
+import { Payments } from "@/pages/Payments";
 import { Exports } from "@/pages/Exports";
 import { Audit } from "@/pages/Audit";
 import { CompaniesList, CompanyDetail } from "@/pages/Companies";
@@ -40,6 +41,10 @@ export const router = createBrowserRouter([
           {
             element: <FeatureGuard requiredFeature="approvals.review" />,
             children: [{ path: "approvals", element: <Approvals /> }],
+          },
+          {
+            element: <FeatureGuard requiredFeature="payments.read" />,
+            children: [{ path: "payments", element: <Payments /> }],
           },
           {
             element: <FeatureGuard requiredFeature="exports.read" />,

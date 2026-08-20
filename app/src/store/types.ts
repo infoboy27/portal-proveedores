@@ -66,6 +66,12 @@ export interface Invoice {
   exportErrorReason: string | null;
   exportedAt: string | null;
   paymentDueDate: string | null;
+  // Dias 13-15: "Pagada" no es un valor nuevo de `status` (que se queda en
+  // "processed", igual que hoy) sino un dato derivado de paidAt — evita
+  // sumar un estado mas al enum cuando processed+paidAt ya distingue los
+  // dos casos ("Pendiente de Pago" vs "Pagada", ver PaymentStatusBadge.tsx).
+  paidAt: string | null;
+  paymentReference: string | null;
   updatedAt: string;
   createdAt: string;
 }

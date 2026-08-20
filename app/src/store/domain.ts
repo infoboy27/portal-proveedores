@@ -87,6 +87,16 @@ interface DomainStore {
   // desde BC — es un campo manual que un admin ingresa en el portal. Ver
   // plan Fase A, seccion "Gap real encontrado para el punto 6".
   setInvoicePaymentDueDate: (invoiceId: string, paymentDueDate: string | null) => Promise<void>;
+  // Dias 13-15: marca una factura "processed" como pagada. Registro
+  // solo-portal (no sincroniza con BC, ver schema-v6.sql) — mismo patron
+  // que rpc_confirm_purchase_order: unico camino de escritura, revalida rol
+  // server-side.
+  markInvoicePaid: (
+    invoiceId: string,
+    changedBy: string,
+    paidAt: string,
+    paymentReference?: string | null,
+  ) => Promise<void>;
 }
 
 export const useDomainStore = create<DomainStore>((set, get) => ({
@@ -298,6 +308,17 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
 
   async setInvoicePaymentDueDate(invoiceId, paymentDueDate) {
     const { error } = await supabase.from("invoices").update({ payment_due_date: paymentDueDate }).eq("id", invoiceId);
+    if (error) throw error;
+    await get().fetchAll();
+  },
+
+  async markInvoicePaid(invoiceId, changedBy, paidAt, paymentReference) {
+    const { error } = await supabase.rpc("rpc_mark_invoice_paid", {
+      p_invoice_id: invoiceId,
+      p_changed_by: changedBy,
+      p_paid_at: paidAt,
+      p_payment_reference: paymentReference ?? null,
+    });
     if (error) throw error;
     await get().fetchAll();
   },

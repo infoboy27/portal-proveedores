@@ -266,3 +266,52 @@ puede definir (no hay nada que inventar aquí).
 
 **Con esto, Días 10-13 del compromiso quedan completos — confirmado
 end-to-end, no solo por ausencia de errores en el log.**
+
+---
+
+## 2026-08-20 (continuación 6) — Pagos y consulta (Días 13-15, parte 1)
+
+**Decisión de diseño explícita**: igual que con confirmación de órdenes,
+esto **no sincroniza con Business Central**. Los vendor ledger entries (los
+movimientos de cuentas por pagar) no están confirmados como disponibles
+para este tenant (`docs/BUSINESS_CENTRAL_INTEGRATION.md §7`) — por la regla
+del proyecto de no inventar endpoints, el estado de pago es un registro
+manual del portal, construido sobre el campo `payment_due_date` que ya
+existía.
+
+**Hecho:**
+- `app/schema-v6.sql`: columnas `invoices.paid_at`/`payment_reference` +
+  RPC `rpc_mark_invoice_paid` (`SECURITY DEFINER`, único camino de
+  escritura, revalida que el rol sea `admin`/`superadmin`/`approver`).
+  **No se agregó un valor nuevo a `invoices.status`** para "pagada" — se
+  deriva de `paid_at` (`status='processed'` + `paid_at` nulo = "Pendiente
+  de pago"; con `paid_at` = "Pagada"). Evita sumar un estado más al enum
+  cuando la combinación existente ya distingue los dos casos.
+- Verificado antes de tocar producción (transacciones revertidas): llamada
+  no autorizada (proveedor de prueba) → rechazada con error explícito;
+  llamada de admin → escribe `paid_at`/`payment_reference` y el historial
+  de auditoría correctamente.
+- `PaymentStatusBadge.tsx` (nuevo componente, mismo patrón que
+  `ExportStatusBadge.tsx`): deriva "Pendiente de pago"/"Pagada" sin tocar
+  `StatusBadge`.
+- `InvoiceDetail` (`Invoices.tsx`): la tarjeta que antes solo dejaba
+  guardar la fecha posible de pago ahora también permite **marcar la
+  factura como pagada** (fecha + referencia opcional) cuando aún no lo
+  está, y muestra el registro de pago cuando ya lo está.
+- **Página nueva `/payments`** ("Pagos"): lista de facturas procesadas con
+  su estado de pago, filtro pendiente/pagada, búsqueda, y estadísticas
+  (procesadas, pendientes, pagadas, monto pendiente). Ruta + feature
+  `payments.read` agregada a todos los roles que ya ven facturas
+  (`admin`/`superadmin`/`approver`/`supplier`/`service_uploader`), ítem de
+  navegación agregado a `AppShell.tsx`.
+- **Explícitamente fuera de alcance, documentado en el código de la
+  página**: un estado de cuenta completo (saldo inicial, notas de crédito,
+  saldo corriente) — eso necesita los vendor ledger entries de BC que
+  siguen sin confirmar. Lo que se construyó es el subconjunto real que sí
+  se puede construir hoy: consulta de estado de pago por factura.
+- `tsc --noEmit` + `vite build` limpios en el primer intento, desplegado.
+
+**Pendiente de Días 13-15:** UAT con un proveedor real y arranque/corte de
+dominio — ambos requieren coordinación directa con Adsemble (acceso a un
+proveedor real de prueba, decisión de fecha de corte), no son tareas que
+se puedan cerrar solo en el código.

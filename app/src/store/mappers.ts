@@ -43,6 +43,8 @@ export function mapInvoice(row: Record<string, unknown>): Invoice {
     exportErrorReason: (row.export_error_reason as string) ?? null,
     exportedAt: (row.exported_at as string) ?? null,
     paymentDueDate: (row.payment_due_date as string) ?? null,
+    paidAt: (row.paid_at as string) ?? null,
+    paymentReference: (row.payment_reference as string) ?? null,
     updatedAt: (row.updated_at as string) ?? (row.created_at as string) ?? "",
     createdAt: (row.created_at as string) ?? "",
   };

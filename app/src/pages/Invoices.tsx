@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { PaymentStatusBadge } from "@/components/ui/PaymentStatusBadge";
 import type { InvoiceStatus } from "@/store/types";
 
 const formatCurrency = (value: number) =>
@@ -222,11 +223,16 @@ export function InvoiceDetail() {
   const confirmInvoiceForApproval = useDomainStore((s) => s.confirmInvoiceForApproval);
   const updateInvoiceData = useDomainStore((s) => s.updateInvoiceData);
   const setInvoicePaymentDueDate = useDomainStore((s) => s.setInvoicePaymentDueDate);
+  const markInvoicePaid = useDomainStore((s) => s.markInvoicePaid);
 
   const [rejectReason, setRejectReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [paymentDueDateInput, setPaymentDueDateInput] = useState("");
   const [savingPaymentDueDate, setSavingPaymentDueDate] = useState(false);
+  const [markPaidDateInput, setMarkPaidDateInput] = useState("");
+  const [markPaidReferenceInput, setMarkPaidReferenceInput] = useState("");
+  const [markingPaid, setMarkingPaid] = useState(false);
+  const [markPaidError, setMarkPaidError] = useState<string | null>(null);
   const [invoiceNumberInput, setInvoiceNumberInput] = useState("");
   const [invoiceDateInput, setInvoiceDateInput] = useState("");
   const [invoiceTaxNumberInput, setInvoiceTaxNumberInput] = useState("");
@@ -324,6 +330,18 @@ export function InvoiceDetail() {
       setSavingPaymentDueDate(false);
     }
   }
+  async function handleMarkPaid() {
+    if (!session.userId || !markPaidDateInput) return;
+    setMarkPaidError(null);
+    setMarkingPaid(true);
+    try {
+      await markInvoicePaid(invoice!.id, session.userId, markPaidDateInput, markPaidReferenceInput.trim() || null);
+    } catch (err) {
+      setMarkPaidError(err instanceof Error ? err.message : "No fue posible registrar el pago.");
+    } finally {
+      setMarkingPaid(false);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -362,6 +380,7 @@ export function InvoiceDetail() {
         </div>
         <div className="mt-5 flex flex-wrap gap-2">
           <StatusBadge status={invoice.status} />
+          <PaymentStatusBadge invoice={invoice} />
           <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${validationTone}`}>
             {t("validationStatus")}: {validationLabel}
           </span>
@@ -376,22 +395,60 @@ export function InvoiceDetail() {
 
       {isApprover && invoice.status === "processed" && (
         <Card className="p-5">
-          <h2 className="text-lg font-semibold text-slate-950">Pendiente de pago</h2>
-          <p className="mt-1 text-sm text-slate-500">
-            Fecha posible de pago — campo manual, no sincronizado con Business Central (la API estandar no expone
-            los movimientos de cuentas por pagar).
-          </p>
-          <div className="mt-4 flex flex-wrap items-center gap-3">
-            <Input
-              type="date"
-              value={paymentDueDateInput}
-              onChange={(e) => setPaymentDueDateInput(e.target.value)}
-              className="max-w-xs"
-            />
-            <Button onClick={handleSavePaymentDueDate} disabled={savingPaymentDueDate}>
-              {savingPaymentDueDate ? "..." : t("save")}
-            </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-lg font-semibold text-slate-950">Pagos</h2>
+            <PaymentStatusBadge invoice={invoice} />
           </div>
+          <p className="mt-1 text-sm text-slate-500">
+            Registro manual — Business Central no expone los movimientos de cuentas por pagar de este tenant, asi
+            que el estado de pago no se sincroniza automaticamente.
+          </p>
+
+          <div className="mt-4">
+            <label className="text-xs uppercase tracking-[0.18em] text-slate-500">Fecha posible de pago</label>
+            <div className="mt-1 flex flex-wrap items-center gap-3">
+              <Input
+                type="date"
+                value={paymentDueDateInput}
+                onChange={(e) => setPaymentDueDateInput(e.target.value)}
+                className="max-w-xs"
+              />
+              <Button onClick={handleSavePaymentDueDate} disabled={savingPaymentDueDate}>
+                {savingPaymentDueDate ? "..." : t("save")}
+              </Button>
+            </div>
+          </div>
+
+          {invoice.paidAt ? (
+            <div className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+              <p className="text-sm font-semibold text-emerald-800">Pagada el {formatDate(invoice.paidAt)}</p>
+              {invoice.paymentReference && (
+                <p className="mt-1 text-sm text-emerald-700">Referencia: {invoice.paymentReference}</p>
+              )}
+            </div>
+          ) : (
+            <div className="mt-5 border-t border-slate-100 pt-4">
+              <label className="text-xs uppercase tracking-[0.18em] text-slate-500">Marcar como pagada</label>
+              <div className="mt-1 flex flex-wrap items-center gap-3">
+                <Input
+                  type="date"
+                  value={markPaidDateInput}
+                  onChange={(e) => setMarkPaidDateInput(e.target.value)}
+                  className="max-w-xs"
+                />
+                <Input
+                  value={markPaidReferenceInput}
+                  onChange={(e) => setMarkPaidReferenceInput(e.target.value)}
+                  placeholder="Referencia (opcional)"
+                  className="max-w-xs"
+                />
+                <Button onClick={handleMarkPaid} disabled={markingPaid || !markPaidDateInput}>
+                  {markingPaid ? "..." : "Marcar como pagada"}
+                </Button>
+              </div>
+              {markPaidError && <p className="mt-2 text-sm text-rose-700">{markPaidError}</p>}
+            </div>
+          )}
         </Card>
       )}
 

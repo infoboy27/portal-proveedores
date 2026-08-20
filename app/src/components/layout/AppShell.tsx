@@ -11,6 +11,7 @@ const NAV_ITEMS: { to: string; labelKey: string; feature?: string }[] = [
   { to: "/orders", labelKey: "purchaseOrdersTitle", feature: "orders.read" },
   { to: "/invoices", labelKey: "invoices", feature: "invoices.read" },
   { to: "/approvals", labelKey: "pendingApprovalsTitle", feature: "approvals.review" },
+  { to: "/payments", labelKey: "paymentsTitle", feature: "payments.read" },
   { to: "/exports", labelKey: "exportsTitle", feature: "exports.read" },
   { to: "/audit", labelKey: "auditTitle", feature: "audit.read" },
   { to: "/companies", labelKey: "companiesTitle", feature: "companies.manage" },

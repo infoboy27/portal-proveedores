@@ -69,13 +69,19 @@ Falta cerrar en este bloque:
 
 ## Días 13-15 — Pagos, estado de cuenta, UAT, arranque
 
-- Nuevo estado `pending_payment`/`paid` en `invoices.status` + campo de
-  fecha posible de pago.
-- Sync de pagos/vendor ledger desde BC (condicionado a la confirmación de
-  Días 1-2).
-- Página de consulta de pagos + estado de cuenta.
-- UAT con un proveedor real.
-- Corte de dominio/DNS y arranque.
+- [x] Estado de pago por factura (`paid_at`/`payment_reference`, derivado
+      sin agregar valor nuevo a `invoices.status`) + fecha posible de pago
+      (ya existía) — 2026-08-20, ver `BITACORA.md`.
+- [x] Página de consulta de pagos (`/payments`) — 2026-08-20. **No** incluye
+      estado de cuenta completo (saldo inicial, notas de crédito, saldo
+      corriente): eso sigue bloqueado en la sync de vendor ledger entries
+      desde BC, condicionada a la confirmación de Días 1-2.
+- Sync de pagos/vendor ledger desde BC — bloqueado hasta confirmar que el
+  tenant expone esa entidad (Días 1-2).
+- UAT con un proveedor real — requiere que Adsemble facilite acceso a un
+  proveedor real de prueba.
+- Corte de dominio/DNS y arranque — requiere decisión de Adsemble sobre
+  `portalproveedores.adsemble.do` vs `proveedores.jfmcss.com` y fecha.
 
 ## Bugs legacy conocidos (heredados del portal anterior)
 

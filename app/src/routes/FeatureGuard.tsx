@@ -12,6 +12,7 @@ export const ROLE_FEATURES: Record<string, string[]> = {
     "invoices.read",
     "approvals.review",
     "exports.read",
+    "payments.read",
     "audit.read",
     "companies.manage",
     "users.manage",
@@ -22,17 +23,18 @@ export const ROLE_FEATURES: Record<string, string[]> = {
     "invoices.read",
     "approvals.review",
     "exports.read",
+    "payments.read",
     "audit.read",
     "companies.manage",
     "users.manage",
     "suppliers.manage",
   ],
-  approver: ["orders.read", "invoices.read", "approvals.review", "audit.read"],
-  supplier: ["orders.read", "invoices.read"],
+  approver: ["orders.read", "invoices.read", "approvals.review", "payments.read", "audit.read"],
+  supplier: ["orders.read", "invoices.read", "payments.read"],
   // Rol interno para cargar facturas de proveedores recurrentes de
   // servicios (compromiso enviado a Adsemble) — mismos permisos que
   // supplier, ya que sube facturas desde OrderDetail igual que un proveedor.
-  service_uploader: ["orders.read", "invoices.read"],
+  service_uploader: ["orders.read", "invoices.read", "payments.read"],
 };
 
 export function FeatureGuard({ requiredFeature }: { requiredFeature?: string; children?: ReactNode }) {
