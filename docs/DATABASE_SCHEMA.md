@@ -29,19 +29,27 @@ BC vía `bc-sync-orders` (se borran y reinsertan en cada corrida — no hay
 merge incremental de líneas).
 
 ### `invoices`
-`id, company_id, purchase_order_id, vendor_id, vendor_name, vendor_tax_id, invoice_number, invoice_tax_number (NCF), invoice_tax_security_number, invoice_date, invoice_duedate, fiscal_duedate, subtotal_amount, discount_amount, total_tax_amount, total_amount, status, file_path, filename, valid_tax_number, valid_invoice_tax_number, rejection_reason, erp_id, bc_invoice_id, bc_invoice_number, export_error_reason, exported_at, changed_by_user_id, created_at, updated_at`
+`id, company_id, purchase_order_id, vendor_id, vendor_name, vendor_tax_id, invoice_number, invoice_tax_number (NCF), invoice_tax_security_number, invoice_date, invoice_duedate, fiscal_duedate, subtotal_amount, discount_amount, total_tax_amount, total_amount, status, file_path, filename, valid_tax_number, valid_invoice_tax_number, rejection_reason, erp_id, bc_invoice_id, bc_invoice_number, export_error_reason, exported_at, payment_due_date, changed_by_user_id, created_at, updated_at`
 
 `status`: `draft → uploaded → pending_approval → approved → ready_for_export → exported/processed`,
 con ramas a `rejected` y `export_error`.
 
-**No existe** `pending_payment`/`paid` ni un campo de fecha posible de pago —
-brecha frente al compromiso de "consulta de pagos y estado de cuenta" (ver
-`BITACORA.md`).
+`payment_due_date` existe como campo manual (`setInvoicePaymentDueDate` en
+`domain.ts`) — un admin lo llena a mano porque la API estándar de BC no
+expone vendor ledger entries. **Lo que falta** es el estado
+`pending_payment`/`paid` en el enum de `status` y una página de consulta de
+pagos/estado de cuenta — brecha real frente al compromiso (ver `BITACORA.md`).
 
 **No hay constraint de duplicado** sobre `(vendor_id, invoice_number)` — la
 validación de factura duplicada, monto y cantidad contra la orden está
 pendiente (el código tiene un comentario explícito: "se omite el flujo de
 factura duplicada").
+
+Nota de higiene: estas cinco columnas (`bc_invoice_id`, `bc_invoice_number`,
+`export_error_reason`, `exported_at`, `payment_due_date`) existían en la
+base viva pero nunca se habían capturado en un archivo de migración hasta
+`app/schema-v3.sql` (2026-08-20) — deriva de esquema real, confirmada con
+`pg_dump --schema-only` contra la base de producción interna.
 
 ### `invoice_lines`
 `id, invoice_id→invoices, company_id, description, quantity, price, amount, sequence`
@@ -53,9 +61,9 @@ del ciclo de vida de la factura, poblada por la RPC `rpc_update_invoice_status`.
 ### `user_profiles`
 `id (=auth.users.id), username, email, role, company_id→companies, active, last_login`
 
-`role` — `check` constraint: `admin | superadmin | approver | supplier`.
-Falta el rol interno para carga de facturas de proveedores recurrentes de
-servicios (compromiso pendiente, ver `BITACORA.md`).
+`role` — `check` constraint: `admin | superadmin | approver | supplier | service_uploader`.
+`service_uploader` es el rol interno para carga de facturas de proveedores
+recurrentes de servicios (agregado en `app/schema-v3.sql`).
 
 ### `user_vendor_mapping`
 `user_id→user_profiles, vendor_id→vendors, company_id, is_primary` — vínculo
@@ -72,13 +80,23 @@ Upsert de una factura completa (usada al cargar/editar datos de factura).
 
 ## Row Level Security — estado real
 
-Todas las tablas tienen RLS habilitado, pero las políticas actuales son
-`authenticated read-all` (cualquier usuario logueado lee cualquier fila) y
-escritura solo vía las RPCs (`security definer`) o `service_role`. Esto está
-marcado explícitamente como `TODO produccion` en `schema.sql`. **Es el
-bloqueante de seguridad #1** antes de manejar datos reales de proveedores —
-las políticas deben filtrar por `company_id`/`vendor_id` alcanzable desde
-`user_vendor_mapping` para el usuario de la sesión.
+Cerrado en `app/schema-v3.sql` (2026-08-20, ver `BITACORA.md`). Todas las
+tablas tienen RLS habilitado con políticas escopadas por rol/empresa/vendor
+(no más `authenticated read-all`), usando tres funciones `SECURITY DEFINER`:
+
+```
+portal_role()        -- role del usuario autenticado
+portal_company_id()  -- company_id del usuario autenticado
+portal_vendor_ids()  -- vendor_id(s) mapeados via user_vendor_mapping
+```
+
+Reglas: `admin`/`superadmin` sin restricción; `approver` filtrado por
+`company_id`; `supplier`/`service_uploader` filtrado por `portal_vendor_ids()`.
+`invoices` UPDATE además bloquea que un proveedor mueva su propia factura
+más allá de `pending_approval` por REST directo (solo la RPC y la Edge
+Function con `service_role` pueden hacerlo). `user_profiles` ganó su primera
+política UPDATE (antes no existía ninguna, así que `Users.tsx` no podía
+guardar cambios de rol).
 
 ## Mapeo con el esquema legacy (Supabase del proveedor original)
 

@@ -15,12 +15,11 @@ arranque, el proyecto ya vaya adelantado en vez de empatado.
 
 - [x] Código real puesto en git y en GitHub (este repo, carpetas `app/` e `infra/`).
 - [x] Documentación reescrita para reflejar la arquitectura real.
-- [ ] Agregar el rol interno faltante ("carga de facturas de proveedores
-      recurrentes de servicios") al `check` constraint de `user_profiles.role`
-      y a la UI.
-- [ ] Reemplazar RLS `authenticated read-all` por políticas reales de
-      aislamiento por `company_id`/`vendor_id` (bloqueante de seguridad,
-      técnicamente es contenido de "Días 3-6" pero no debe esperar).
+- [x] Rol interno `service_uploader` agregado (`app/schema-v3.sql` + `types.ts`
+      + `FeatureGuard.tsx` + `Users.tsx` + `Orders.tsx`) — 2026-08-20.
+- [x] RLS real por `company_id`/`vendor_id` reemplazando "authenticated
+      read-all", verificado con sesiones simuladas y desplegado — 2026-08-20,
+      ver `BITACORA.md`.
 
 ## Días 1-2 — Confirmación técnica con BC + arranque
 
@@ -37,11 +36,8 @@ Falta cerrar en este bloque:
 
 ## Días 3-6 — Auth, roles, aislamiento, sync de proveedores
 
-- Rol interno para facturas de proveedores recurrentes (si no se hizo en
-  pre-trabajo).
-- RLS real por proveedor (si no se hizo en pre-trabajo) — con test que
-  pruebe que un usuario de un vendor no puede leer datos de otro vendor
-  manipulando IDs.
+- ~~Rol interno para facturas de proveedores recurrentes~~ y ~~RLS real por
+  proveedor~~ — cerrados en pre-trabajo (2026-08-20).
 - Perfil de proveedor sincronizado completo (dirección, contacto, términos
   de pago) — condicionado a qué campos exponga BC (Días 1-2).
 - Sync de proveedores con su propio schedule (hoy nace implícito dentro de

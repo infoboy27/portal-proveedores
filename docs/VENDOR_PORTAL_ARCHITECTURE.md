@@ -62,8 +62,8 @@ cliente.
 
 ## 4. Roles
 
-Definidos hoy en `user_profiles.role` (`check` constraint en `schema.sql`):
-`admin`, `superadmin`, `approver`, `supplier`.
+Definidos en `user_profiles.role` (`check` constraint, ver `app/schema-v3.sql`):
+`admin`, `superadmin`, `approver`, `supplier`, `service_uploader`.
 
 Compromiso con Adsemble (correo de alcance): Administrador, Proveedor,
 Analista, y un rol interno adicional para carga de facturas de proveedores
@@ -73,19 +73,26 @@ recurrentes de servicios. Mapeo:
 |---|---|---|
 | Administrador | `admin` / `superadmin` | ✅ |
 | Proveedor | `supplier` | ✅ |
-| Analista | `approver` | ✅ (falta ajustar copy en UI) |
-| Rol interno — facturas de proveedores recurrentes | *(no existe)* | ❌ pendiente — ver `BITACORA.md` |
+| Analista | `approver` (copy en UI ajustado a "Analista") | ✅ |
+| Rol interno — facturas de proveedores recurrentes | `service_uploader` | ✅ — usa `user_vendor_mapping` igual que `supplier` para asociarse a uno o varios vendors recurrentes |
 
 ## 5. Aislamiento de datos por proveedor — estado real
 
-**Hoy el aislamiento es solo de UI**: cada página filtra `purchaseOrders`/
-`invoices` por `session.supplierId`/`session.companyId` en el cliente
-(`Orders.tsx`, `Approvals.tsx`, etc.). Las políticas RLS en Postgres son
-`authenticated read-all` (ver `schema.sql`, marcado ahí mismo como
-`TODO produccion`). Esto significa que cualquier usuario autenticado puede
-leer datos de otro proveedor llamando directo a la API de Supabase, sin pasar
-por la UI. **Bloqueante de seguridad antes de manejar datos reales de
-proveedores** — ver plan de cierre en `IMPLEMENTATION_PLAN.md`.
+**Aplicado a nivel de base de datos (RLS), no solo UI** — ver `app/schema-v3.sql`
+y `docs/BITACORA.md` (2026-08-20). Tres funciones `SECURITY DEFINER`
+(`portal_role()`, `portal_company_id()`, `portal_vendor_ids()`) resuelven el
+rol/empresa/vendors del usuario autenticado (`auth.uid()`) y las políticas
+de cada tabla filtran por eso:
+
+- `admin`/`superadmin`: sin restricción.
+- `approver`: filtrado por `company_id` propio.
+- `supplier`/`service_uploader`: filtrado por los `vendor_id` alcanzables vía
+  `user_vendor_mapping`.
+
+Verificado con sesiones simuladas antes de aplicar a la base viva (detalle en
+`BITACORA.md`). El filtrado que hacían las páginas en el cliente
+(`Orders.tsx`, `Approvals.tsx`, etc.) sigue ahí pero ahora es una capa
+redundante — el aislamiento real ya no depende de que la UI no tenga bugs.
 
 ## 6. Referencias
 

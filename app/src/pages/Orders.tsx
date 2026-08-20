@@ -204,7 +204,11 @@ export function OrderDetail() {
   );
   const linkedInvoices = useMemo(() => invoices.filter((inv) => inv.purchaseOrderId === orderId), [invoices, orderId]);
 
-  const canUpload = session.role === "admin" || session.role === "superadmin" || session.role === "supplier";
+  const canUpload =
+    session.role === "admin" ||
+    session.role === "superadmin" ||
+    session.role === "supplier" ||
+    session.role === "service_uploader";
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0] ?? null;

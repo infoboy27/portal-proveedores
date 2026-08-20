@@ -12,8 +12,9 @@ import type { PortalUser, UserRole } from "@/store/types";
 const ROLE_LABEL: Record<UserRole, string> = {
   superadmin: "Super admin",
   admin: "Administrador",
-  approver: "Aprobador",
+  approver: "Analista",
   supplier: "Proveedor",
+  service_uploader: "Carga de facturas (interno)",
 };
 
 // Reconstruccion de `function VP()` — index-beautified.js:30017.

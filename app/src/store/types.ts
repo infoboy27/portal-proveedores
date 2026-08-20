@@ -1,7 +1,7 @@
 // Tipos derivados del esquema recuperado por ingenieria inversa.
 // Ver: Portal-proveedores/extraido/01-esquema-tablas.md
 
-export type UserRole = "admin" | "superadmin" | "approver" | "supplier";
+export type UserRole = "admin" | "superadmin" | "approver" | "supplier" | "service_uploader";
 
 export type InvoiceStatus =
   | "draft"
