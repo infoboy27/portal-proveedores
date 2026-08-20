@@ -38,10 +38,17 @@ Falta cerrar en este bloque:
 
 - ~~Rol interno para facturas de proveedores recurrentes~~ y ~~RLS real por
   proveedor~~ — cerrados en pre-trabajo (2026-08-20).
-- Perfil de proveedor sincronizado completo (dirección, contacto, términos
-  de pago) — condicionado a qué campos exponga BC (Días 1-2).
-- Sync de proveedores con su propio schedule (hoy nace implícito dentro de
-  `bc-sync-orders`).
+- [x] Sync de proveedores con su propio schedule + email — 2026-08-20,
+      `bc-sync-vendors`, cron cada 6h. Sigue faltando dirección/teléfono/
+      términos de pago (condicionado a qué campos exponga BC).
+- [x] Creación automática de usuario proveedor + correo de bienvenida
+      (funcionalidad #1 del informe original) — 2026-08-20,
+      `invite-user`/`bc-sync-vendors`, plantillas con marca Adsemble.
+      **Apagado por default** (`inviteNewVendors: false`) tras el
+      incidente del 2026-08-20 (ver `BITACORA.md`) — activar por lotes
+      requiere decisión explícita de Adsemble.
+- [x] Login por RNC/cédula además de correo — 2026-08-20,
+      `resolve-login-identifier`.
 
 ## Días 7-9 — Órdenes de compra
 

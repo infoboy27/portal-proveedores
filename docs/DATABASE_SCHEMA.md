@@ -10,11 +10,16 @@
 `id, company_name, bc_code, disabled_at`
 
 ### `vendors`
-`id, vendor_number, tax_registration_number, company_name, status, valid_invoice_tax_number`
+`id, vendor_number, tax_registration_number, company_name, status, valid_invoice_tax_number, email`
 
-Se crea al vuelo desde `bc-sync-orders` cuando llega una orden de un proveedor
-nuevo. **No tiene perfil completo** (dirección, contacto, teléfono, términos
-de pago) — pendiente si Business Central expone esos campos para este tenant.
+Índice único en `vendor_number` (2026-08-20, `app/schema-v8.sql`) — permite
+upsert en bloque desde `bc-sync-vendors`. `bc-sync-orders` sigue creando un
+vendor mínimo al vuelo si aparece uno nuevo en una orden (sin email);
+`bc-sync-vendors` trae el perfil completo (email incluido) desde la API
+estándar y, opcionalmente, dispara la invitación automática del proveedor
+(ver `docs/BUSINESS_CENTRAL_INTEGRATION.md` y el incidente en `BITACORA.md`).
+**Sigue sin dirección/teléfono/términos de pago** — pendiente si BC expone
+esos campos para este tenant.
 
 ### `purchase_orders`
 `id, company_id→companies, vendor_id→vendors, order_number, order_date, amount, status, sequence`

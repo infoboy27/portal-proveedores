@@ -1,0 +1,5 @@
+# Referencia — instalar con `crontab -e` en el servidor (no se aplica solo).
+# Cada 6 horas: sincroniza el perfil de proveedores (email, estado) desde
+# BC. NUNCA invita automaticamente (inviteNewVendors:false, hardcoded en
+# sync-vendors.sh) -- ver incidente 2026-08-20 en docs/BITACORA.md.
+0 */6 * * * PORTAL_ANON_KEY="<pegar VITE_SUPABASE_ANON_KEY de portal/.env>" /home/ubuntu/adsemble/portal/scripts/sync-vendors.sh >>/home/ubuntu/adsemble/portal/logs/sync-vendors.cron.log 2>&1

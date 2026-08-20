@@ -1,0 +1,73 @@
+# Copiar a /home/ubuntu/adsemble/supabase/docker-compose.override.yml en el servidor.
+# VPS 163.245.207.38 (no el server de WiFi 10.0.0.160 — ese quedo descartado por
+# inestabilidad de red). Conecta Kong (unico punto de entrada de Supabase: API +
+# Studio en "/") a la red "winu-bot-signal-network" que usa el Traefik de esta
+# VPS (ver /home/ubuntu/loadbalancer/traefik.yml, providers.docker.network), y
+# deja de publicar puertos directo al host (Postgres, pooler, Kong) — todo pasa
+# por Traefik en 80/443.
+#
+# Studio ya viene protegido con basic-auth propio de Supabase (ruta "dashboard"
+# en kong.yml, credenciales DASHBOARD_USERNAME/PASSWORD del .env) — por eso NO
+# se restringe por IP a nivel Traefik: la misma URL sirve la API publica
+# (/rest/v1, /auth/v1, /storage/v1) que SI debe ser alcanzable desde cualquier
+# navegador de usuarios del portal.
+#
+# DNS: no hace falta crear nada — *.jfmcss.com ya resuelve por wildcard a esta
+# VPS (confirmado: proveedores.jfmcss.com y api.proveedores.jfmcss.com ya
+# apuntan aqui).
+
+services:
+  kong:
+    ports: !reset []
+    networks:
+      - default
+      - winu-bot-signal-network
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.adsemble-supabase.rule=Host(`api.proveedores.jfmcss.com`)
+      - traefik.http.routers.adsemble-supabase.entrypoints=websecure
+      - traefik.http.routers.adsemble-supabase.tls=true
+      - traefik.http.routers.adsemble-supabase.tls.certresolver=cloudflare
+      - traefik.docker.network=winu-bot-signal-network
+      - traefik.http.services.adsemble-supabase.loadbalancer.server.port=8000
+
+  # Business Central (Fase A): pasa las credenciales del App Registration de
+  # Azure AD (definidas en supabase/.env, NUNCA versionadas) al contenedor de
+  # Edge Functions, donde main/index.ts las reenvia a cada worker via
+  # Deno.env.toObject().
+  functions:
+    environment:
+      BC_TENANT_ID: ${BC_TENANT_ID}
+      BC_CLIENT_ID: ${BC_CLIENT_ID}
+      BC_CLIENT_SECRET: ${BC_CLIENT_SECRET}
+      BC_ENVIRONMENT: ${BC_ENVIRONMENT}
+      BC_COMPANY_ID: ${BC_COMPANY_ID}
+      # invite-user necesita esto para armar el redirectTo del correo de
+      # invitacion (que caiga en /set-password del portal, no en la raiz).
+      SITE_URL: ${SITE_URL}
+
+  supavisor:
+    ports: !reset []
+
+  # Extraccion de fecha/NCF por OCR (Tesseract), 100% self-hosted — sin
+  # servicios de pago de terceros. Sin puerto expuesto: solo alcanzable desde
+  # "functions" via la red default del proyecto compose (nombre de servicio
+  # "ocr-service"). Carpeta fuente: supabase/ocr-service/ en este mismo host.
+  ocr-service:
+    build: ./ocr-service
+    container_name: adsemble-ocr-service
+    restart: unless-stopped
+
+  # Plantillas de correo con marca Adsemble (invite/recovery) — colores del
+  # logo (azul/rojo/amarillo/navy). Agregado 2026-08-20 junto con el flujo
+  # de onboarding real (invite-user Edge Function).
+  auth:
+    volumes:
+      - ./volumes/auth-templates:/etc/auth/templates:ro
+    environment:
+      GOTRUE_MAILER_TEMPLATES_INVITE: /etc/auth/templates/invite.html
+      GOTRUE_MAILER_TEMPLATES_RECOVERY: /etc/auth/templates/recovery.html
+
+networks:
+  winu-bot-signal-network:
+    external: true

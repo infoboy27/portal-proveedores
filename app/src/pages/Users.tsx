@@ -25,17 +25,25 @@ const ROLE_LABEL: Record<UserRole, string> = {
 // requiere una Edge Function con la Admin API (service_role), que no puede
 // invocarse de forma segura desde el navegador con la clave anon. Ver nota
 // en store/domain.ts (updateUser).
+// "Crear usuario" invita de verdad (2026-08-20, ver invite-user Edge
+// Function) — antes de esto solo se podia editar un perfil ya existente,
+// porque crear el login real necesita la Admin API (service_role), que no
+// se puede invocar de forma segura desde el navegador con la clave anon.
 export function Users() {
   const { t } = useTranslation();
   const session = useSessionStore((s) => s.session);
   const users = useDomainStore((s) => s.users);
+  const suppliers = useDomainStore((s) => s.suppliers);
   const updateUser = useDomainStore((s) => s.updateUser);
+  const createUser = useDomainStore((s) => s.createUser);
 
   const isAdmin = session.role === "admin" || session.role === "superadmin";
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<UserRole | "all">("all");
   const [editing, setEditing] = useState<PortalUser | null>(null);
+  const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const scoped = useMemo(() => (isAdmin ? users : users.filter((u) => u.companyId === session.companyId)), [isAdmin, users, session.companyId]);
 
@@ -59,16 +67,37 @@ export function Users() {
     }
   }
 
+  async function handleCreate(input: { email: string; role: UserRole; companyId: string; vendorId: string; username: string }) {
+    setCreateError(null);
+    setSaving(true);
+    try {
+      await createUser({
+        email: input.email,
+        role: input.role,
+        companyId: input.companyId || null,
+        vendorId: input.vendorId || null,
+        username: input.username || undefined,
+      });
+      setCreating(false);
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : "No fue posible invitar al usuario.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <section className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="space-y-2">
           <h1 className="text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">{t("users")}</h1>
           <p className="max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
-            Gestion de accesos y roles. La creacion de cuentas nuevas requiere una funcion de servidor con permisos de
-            administrador (ver comentario en el codigo).
+            Gestión de accesos y roles. Crear un usuario le envía una invitación real por correo.
           </p>
         </div>
+        {isAdmin && (
+          <Button onClick={() => setCreating(true)}>Crear usuario</Button>
+        )}
       </section>
 
       <Card className="p-4 sm:p-5">
@@ -145,7 +174,112 @@ export function Users() {
           />
         )}
       </Modal>
+
+      <Modal
+        open={creating}
+        onClose={() => {
+          setCreating(false);
+          setCreateError(null);
+        }}
+        title="Crear usuario"
+      >
+        <CreateUserForm
+          suppliers={suppliers}
+          saving={saving}
+          error={createError}
+          onCancel={() => {
+            setCreating(false);
+            setCreateError(null);
+          }}
+          onCreate={handleCreate}
+        />
+      </Modal>
     </div>
+  );
+}
+
+function CreateUserForm({
+  suppliers,
+  saving,
+  error,
+  onCancel,
+  onCreate,
+}: {
+  suppliers: { id: string; vendorNumber: string; displayName: string }[];
+  saving: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onCreate: (input: { email: string; role: UserRole; companyId: string; vendorId: string; username: string }) => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
+  const [role, setRole] = useState<UserRole>("supplier");
+  const [vendorId, setVendorId] = useState("");
+  const companies = useDomainStore((s) => s.companies);
+  const [companyId, setCompanyId] = useState("");
+
+  const needsVendor = role === "supplier" || role === "service_uploader";
+
+  return (
+    <form
+      className="space-y-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onCreate({ email, role, companyId, vendorId, username });
+      }}
+    >
+      <div>
+        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Correo</label>
+        <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="correo@dominio.com" required />
+      </div>
+      <div>
+        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Nombre (opcional)</label>
+        <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Nombre para mostrar" />
+      </div>
+      <div>
+        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Rol</label>
+        <Select value={role} onChange={(e) => setRole(e.target.value as UserRole)}>
+          {(Object.keys(ROLE_LABEL) as UserRole[]).map((r) => (
+            <option key={r} value={r}>
+              {ROLE_LABEL[r]}
+            </option>
+          ))}
+        </Select>
+      </div>
+      {needsVendor && (
+        <div>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Proveedor</label>
+          <Select value={vendorId} onChange={(e) => setVendorId(e.target.value)} required>
+            <option value="">Selecciona un proveedor</option>
+            {suppliers.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.displayName} ({s.vendorNumber})
+              </option>
+            ))}
+          </Select>
+        </div>
+      )}
+      <div>
+        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Empresa</label>
+        <Select value={companyId} onChange={(e) => setCompanyId(e.target.value)}>
+          <option value="">Sin empresa (global)</option>
+          {companies.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </Select>
+      </div>
+      {error && <p className="text-sm text-rose-600">{error}</p>}
+      <div className="flex justify-end gap-2 pt-2">
+        <Button type="button" variant="ghost" onClick={onCancel} disabled={saving}>
+          Cancelar
+        </Button>
+        <Button type="submit" disabled={saving || (needsVendor && !vendorId)}>
+          {saving ? "Invitando..." : "Invitar"}
+        </Button>
+      </div>
+    </form>
   );
 }
 

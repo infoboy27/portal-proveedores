@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Invitación — Portal de Proveedores Adsemble</title>
+</head>
+<body style="margin:0; padding:0; background-color:#eef1ee; font-family:Arial, Helvetica, sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#eef1ee; padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px; background-color:#ffffff; border-radius:12px; overflow:hidden; box-shadow:0 2px 8px rgba(30,42,74,0.08);">
+          <tr>
+            <td style="height:6px; background:linear-gradient(90deg, #2C7BD1 0%, #2C7BD1 34%, #DC2F3C 34%, #DC2F3C 67%, #F5C518 67%, #F5C518 100%);"></td>
+          </tr>
+          <tr>
+            <td style="padding:36px 40px 8px;">
+              <p style="margin:0; font-size:22px; font-weight:800; color:#26335C; letter-spacing:-0.02em;">adsemble</p>
+              <p style="margin:2px 0 0; font-size:11px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#6b7690;">Centro de Servicios Compartidos</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 40px 0;">
+              <h1 style="margin:0 0 12px; font-size:20px; line-height:1.35; color:#1a2340;">Fuiste invitado al Portal de Proveedores</h1>
+              <p style="margin:0 0 16px; font-size:14.5px; line-height:1.6; color:#3c4a63;">
+                Adsemble te dio acceso al portal donde podrás consultar tus órdenes de compra, cargar facturas
+                y darle seguimiento a tus pagos.
+              </p>
+              <p style="margin:0 0 24px; font-size:14.5px; line-height:1.6; color:#3c4a63;">
+                Para activar tu cuenta, crea tu contraseña en el siguiente enlace:
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:0 40px 32px;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block; background-color:#2C7BD1; color:#ffffff; font-size:15px; font-weight:700; text-decoration:none; padding:13px 32px; border-radius:8px;">
+                Crear mi contraseña
+              </a>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 40px 32px;">
+              <p style="margin:0; font-size:12.5px; line-height:1.6; color:#8892a6;">
+                Si el botón no funciona, copia y pega este enlace en tu navegador:<br />
+                <a href="{{ .ConfirmationURL }}" style="color:#2C7BD1; word-break:break-all;">{{ .ConfirmationURL }}</a>
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 40px; background-color:#f6f7f9; border-top:1px solid #e7eaf0;">
+              <p style="margin:0; font-size:11.5px; line-height:1.6; color:#8892a6;">
+                Adsemble · Centro de Servicios Compartidos<br />
+                Calle Profesor Emilio Aparicio #57, Santo Domingo, RD<br />
+                Si no esperabas este correo, puedes ignorarlo.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

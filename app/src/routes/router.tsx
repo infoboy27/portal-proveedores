@@ -2,6 +2,7 @@ import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppShell } from "@/components/layout/AppShell";
 import { FeatureGuard } from "./FeatureGuard";
 import { Login } from "@/pages/Login";
+import { SetPassword } from "@/pages/SetPassword";
 import { Dashboard } from "@/pages/Dashboard";
 import { OrdersList, OrderDetail } from "@/pages/Orders";
 import { InvoicesList, InvoiceDetail } from "@/pages/Invoices";
@@ -17,6 +18,7 @@ import { Suppliers } from "@/pages/Suppliers";
 // rutas publicas + rutas privadas agrupadas por requiredFeature.
 export const router = createBrowserRouter([
   { path: "/login", element: <Login /> },
+  { path: "/set-password", element: <SetPassword /> },
   {
     element: <FeatureGuard />,
     children: [

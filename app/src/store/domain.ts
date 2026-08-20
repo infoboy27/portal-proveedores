@@ -85,6 +85,18 @@ interface DomainStore {
   // y llame a la Admin API. Aqui solo se gestiona la fila de user_profiles
   // para un auth.users que ya exista (p.ej. creado por invitacion).
   updateUser: (userId: string, patch: { role: PortalUser["role"]; companyId: string | null; isActive: boolean }) => Promise<void>;
+  // Onboarding real (2026-08-20): invita un login nuevo de verdad, via la
+  // Edge Function invite-user (Admin API + user_profiles + user_vendor_mapping
+  // en una sola llamada). Reemplaza el placeholder anterior donde "Crear
+  // usuario" no existia porque no se podia hacer de forma segura desde el
+  // navegador con la clave anon.
+  createUser: (input: {
+    email: string;
+    role: PortalUser["role"];
+    companyId: string | null;
+    vendorId: string | null;
+    username?: string;
+  }) => Promise<void>;
   // "Pendiente de Pago" (punto 6 del informe): la API estandar de BC no
   // expone vendor ledger entries, asi que este dato NO viaja sincronizado
   // desde BC — es un campo manual que un admin ingresa en el portal. Ver
@@ -336,6 +348,21 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
       p_payment_reference: paymentReference ?? null,
     });
     if (error) throw error;
+    await get().fetchAll();
+  },
+
+  async createUser(input) {
+    const { data, error } = await supabase.functions.invoke("invite-user", {
+      body: {
+        email: input.email,
+        role: input.role,
+        companyId: input.companyId,
+        vendorId: input.vendorId,
+        username: input.username,
+      },
+    });
+    if (error) throw error;
+    if (!data?.ok) throw new Error(data?.error ?? "No se pudo invitar al usuario");
     await get().fetchAll();
   },
 

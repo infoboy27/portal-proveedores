@@ -417,6 +417,100 @@ de intentar publicar.
 
 ---
 
+## 2026-08-20 (continuación 14) — Onboarding real, correos con marca Adsemble, login por RNC
+
+Jonatan pidió construir el onboarding real que faltaba (ver conversación:
+"cómo será el onboard de la primera vez para todos los actores"), con
+marca de Adsemble en los correos, y que los proveedores puedan loguearse
+por RNC/cédula además de correo.
+
+**Construido:**
+- `infra/supabase/auth-templates/invite.html` y `recovery.html` — plantillas
+  HTML con los colores del logo de Adsemble (azul/rojo/amarillo/navy),
+  montadas en el contenedor de `auth` vía `docker-compose.override.yml`
+  (`GOTRUE_MAILER_TEMPLATES_INVITE`/`_RECOVERY`, volumen
+  `./volumes/auth-templates:/etc/auth/templates:ro`). El override quedó
+  mal estructurado en el primer intento (bloque `auth:` pegado después de
+  `networks:` en vez de dentro de `services:`) — corregido y validado con
+  `run.sh compose-config` antes de reiniciar nada.
+- `_shared/provision-user.ts` — helper compartido (invita por Admin API +
+  crea `user_profiles` + `user_vendor_mapping`) usado tanto por
+  `invite-user` (disparado por un admin desde `Users.tsx`) como por
+  `bc-sync-vendors` (disparado por la sync de BC) — separados porque
+  `bc-sync-vendors` no tiene un usuario humano cuyo JWT validar.
+- `invite-user` (Edge Function): revalida server-side que quien llama sea
+  `admin`/`superadmin` contra su JWT real, nunca confía en el rol que
+  mande el cliente. `Users.tsx` ganó su primer botón "Crear usuario" real
+  (antes no existía — solo se podía editar un perfil ya creado a mano).
+- `resolve-login-identifier` (Edge Function) + `Login.tsx`: permite entrar
+  con RNC/cédula ademas de correo — resuelve el identificador al correo
+  real antes de llamar `signInWithPassword` (Supabase Auth solo soporta
+  login por correo). Responde siempre con un mensaje generico si no hay
+  match, para no facilitar enumeracion de RNCs.
+- `SetPassword.tsx` (`/set-password`, ruta pública): landing del enlace de
+  invitación/recuperación — Supabase ya establece la sesión desde el hash
+  de la URL, esta pantalla solo pide la contraseña nueva. Así se completa
+  el "primer login" sin que el usuario tenga que hacer nada raro: el botón
+  del correo lo autentica solo.
+
+**Incidente real durante las pruebas — 26 proveedores reales invitados por
+error:**
+La primera versión de `bc-sync-vendors` hacía un `select` + `insert`/`update`
+**secuencial** por cada uno de los ~3,492 vendors del sandbox. Se colgó por
+timeout (`WorkerRequestCancelled`) — pero antes de colgarse, ya había
+invitado por correo real a **26 proveedores reales** (Google LLC, Grupo
+Diario Libre, Editora Listín Diario, y 23 personas/empresas más), sin
+aprobación de Adsemble y sin forma de deshacer el envío. Se identificaron
+los 26 (tabla completa entregada a Jonatan en el chat) y se borraron las
+26 cuentas (sin contraseña todavía — nadie había podido entrar) para que
+el enlace del correo dejara de funcionar.
+
+**Corrección — dos salvaguardas independientes, a propósito redundantes:**
+1. `app/schema-v8.sql`: índice único en `vendors.vendor_number` (se probó
+   primero como índice parcial, Postgres no lo usa para inferir el target
+   de un `ON CONFLICT` — error `42P10` — corregido a índice normal, los
+   `NULL` siguen siendo válidos). Permite upsert en bloque (una sola
+   llamada a Supabase) en vez de una consulta por vendor.
+2. `bc-sync-vendors` reescrito: `inviteNewVendors` en el body, **default
+   `false`** — nunca invita a nadie salvo que se pida explícitamente. Aun
+   pidiéndolo, un límite duro (`MAX_INVITES_PER_RUN = 10`) evita que una
+   corrida mande cientos/miles de correos de una sola vez incluso si se
+   activó a propósito — fuerza un rollout por lotes controlados, nunca un
+   blast. El cron (`scripts/sync-vendors.sh`, cada 6h) solo sincroniza
+   datos de proveedor (email, estado), **nunca** invita — eso sigue siendo
+   una acción deliberada desde `Users.tsx` o una decisión explícita futura
+   de Adsemble para invitar en lotes.
+3. Reprobado en modo seguro: `3,494 vendors` procesados en `1.7s` (antes:
+   timeout), `0` invitaciones — confirmado en base de datos (solo las 2
+   cuentas de prueba propias, ninguna de las 26 borradas volvió a
+   aparecer).
+
+**Probado end-to-end (navegador, con Jonatan como testigo antes de dar
+por buena la marca):**
+- Invitación real a `jmservicedo@gmail.com` (proveedor de prueba "JFMC
+  Smart Services", creado a propósito en el sandbox) vía `invite-user` —
+  Jonatan confirmó que el correo llegó con la marca de Adsemble.
+- Se generó un enlace de acceso directo (`/admin/generate_link`, sin
+  mandar otro correo) para probar el flujo completo yo mismo: clic en el
+  enlace → sesión establecida sola → `/set-password` → contraseña creada →
+  Dashboard como `supplier`, con la navegación correctamente escopada
+  (Órdenes/Facturas/Pagos, sin secciones de admin). Un primer intento con
+  el body anidado mal (`options.redirect_to` en vez de `redirect_to` a
+  nivel raíz) generó un enlace que caía en `/` en vez de `/set-password` —
+  detectado y corregido antes de probarlo.
+- Login por RNC (`130999888`, el de JFMC) confirmado funcionando — resuelve
+  al correo real y entra igual que con el correo directo.
+- `bc-sync-vendors` en modo seguro sincronizó `PROV-000283` (JFMC) sin
+  invitar (como se esperaba, ya que se probó la invitación aparte y a
+  propósito).
+
+**Pendiente:** decidir con Adsemble si/cuándo activar `inviteNewVendors`
+para los proveedores reales que ya existen en BC — dado el incidente, esto
+no debe activarse sin una decisión explícita y probablemente por lotes
+pequeños, no de una vez.
+
+---
+
 ## 2026-08-20 (continuación 10) — Primer intento de publicación: colisión de IDs
 
 Jonatan corrió `AL: Download Symbols` (exitoso, confirmó versión real del
