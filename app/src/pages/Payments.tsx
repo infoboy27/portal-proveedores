@@ -10,7 +10,14 @@ import { PaymentStatusBadge } from "@/components/ui/PaymentStatusBadge";
 
 const formatCurrency = (value: number) =>
   new Intl.NumberFormat("es-DO", { style: "currency", currency: "DOP" }).format(value);
-const formatDate = (value: string | null) => (value ? new Date(value).toLocaleDateString("es-DO") : "-");
+// new Date("YYYY-MM-DD") parses as UTC midnight; formatting it in a
+// negative-UTC-offset timezone (e.g. es-DO, UTC-4) then shows the previous
+// day. Parse the date-only string as local calendar components instead.
+const formatDate = (value: string | null) => {
+  if (!value) return "-";
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString("es-DO");
+};
 
 // Dias 13-15: "consulta de pagos y estado de cuenta". Un estado de cuenta
 // completo (saldo inicial, notas de credito, saldo corriente) necesita
