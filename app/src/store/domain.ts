@@ -41,6 +41,14 @@ interface DomainStore {
   rejectInvoice: (invoiceId: string, changedBy: string, reason: string) => Promise<void>;
   exportInvoice: (invoiceId: string, changedBy: string) => Promise<void>;
   confirmInvoiceForApproval: (invoiceId: string, changedBy: string) => Promise<void>;
+  // Confirmacion de orden de compra (Dias 7-9): registro solo-portal, nunca
+  // escribe a BC directo — ver rpc_confirm_purchase_order en schema-v4.sql.
+  confirmPurchaseOrder: (
+    orderId: string,
+    userId: string,
+    action: "confirmed" | "change_requested",
+    input?: { newExpectedDate?: string | null; reason?: string | null; comments?: string | null },
+  ) => Promise<void>;
   // Captura manual de los datos que hoy nadie llena (ver PLAN-RECONSTRUCCION.md:
   // el webhook de OCR del proveedor original nunca se conecto). El proveedor
   // completa esto antes de confirmar — son 2 de los 3 datos que Fase A
@@ -229,6 +237,19 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
 
     await get().fetchAll();
     return { invoiceId: data.id as string };
+  },
+
+  async confirmPurchaseOrder(orderId, userId, action, input) {
+    const { error } = await supabase.rpc("rpc_confirm_purchase_order", {
+      p_order_id: orderId,
+      p_user_id: userId,
+      p_action: action,
+      p_new_expected_date: input?.newExpectedDate ?? null,
+      p_reason: input?.reason ?? null,
+      p_comments: input?.comments ?? null,
+    });
+    if (error) throw error;
+    await get().fetchAll();
   },
 
   async setInvoicePaymentDueDate(invoiceId, paymentDueDate) {

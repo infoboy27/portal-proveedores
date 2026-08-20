@@ -45,10 +45,9 @@ Falta cerrar en este bloque:
 
 ## Días 7-9 — Órdenes de compra
 
-- Botón de **confirmación de orden** (Confirmar / Solicitar cambio) en
-  `OrderDetail.tsx` — hoy no existe ninguna acción, solo lectura + carga de
-  factura. Si BC no expone una acción de confirmación real, queda como
-  registro solo-portal (nunca escribe a BC directo sin validación).
+- [x] **Confirmación de orden** (Confirmar / Solicitar cambio) en
+      `OrderDetail.tsx` — 2026-08-20. Registro solo-portal (`app/schema-v4.sql`),
+      nunca escribe a BC directo — ver `BITACORA.md`.
 - Automatizar `bc-sync-orders` con cron/schedule (hoy manual).
 - Mostrar recepciones en el detalle de orden, si BC las expone para este
   tenant (Días 1-2 lo determina).

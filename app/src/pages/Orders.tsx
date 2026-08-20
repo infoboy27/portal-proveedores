@@ -7,7 +7,7 @@ import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
-import type { PurchaseOrderStatus } from "@/store/types";
+import type { PurchaseOrderConfirmationStatus, PurchaseOrderStatus } from "@/store/types";
 
 const formatCurrency = (value: number) =>
   new Intl.NumberFormat("es-DO", { style: "currency", currency: "DOP" }).format(value);
@@ -26,6 +26,12 @@ const STATUS_TONE: Record<PurchaseOrderStatus, string> = {
   in_review: "bg-amber-100 text-amber-700",
   partially_invoiced: "bg-sky-100 text-sky-700",
   closed: "bg-slate-200 text-slate-700",
+};
+
+const CONFIRMATION_TONE: Record<PurchaseOrderConfirmationStatus, string> = {
+  pending: "bg-slate-100 text-slate-700",
+  confirmed: "bg-emerald-100 text-emerald-700",
+  change_requested: "bg-amber-100 text-amber-700",
 };
 
 // Reconstruccion de `function RP()` — index-beautified.js:29350.
@@ -203,12 +209,54 @@ export function OrderDetail() {
     [purchaseOrderLines, orderId],
   );
   const linkedInvoices = useMemo(() => invoices.filter((inv) => inv.purchaseOrderId === orderId), [invoices, orderId]);
+  const confirmPurchaseOrder = useDomainStore((s) => s.confirmPurchaseOrder);
 
   const canUpload =
     session.role === "admin" ||
     session.role === "superadmin" ||
     session.role === "supplier" ||
     session.role === "service_uploader";
+  // Mismos roles que pueden cargar factura: el proveedor (o quien carga en
+  // su nombre) es quien confirma la orden o pide un cambio.
+  const canConfirmOrder = canUpload;
+
+  const [confirming, setConfirming] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [showChangeForm, setShowChangeForm] = useState(false);
+  const [changeReason, setChangeReason] = useState("");
+  const [newExpectedDate, setNewExpectedDate] = useState("");
+
+  async function handleConfirmOrder() {
+    if (!order || !session.userId) return;
+    setConfirming(true);
+    setConfirmError(null);
+    try {
+      await confirmPurchaseOrder(order.id, session.userId, "confirmed");
+    } catch (err) {
+      setConfirmError(err instanceof Error ? err.message : t("unableToConfirmPurchaseOrder"));
+    } finally {
+      setConfirming(false);
+    }
+  }
+
+  async function handleRequestChange() {
+    if (!order || !session.userId || !changeReason.trim()) return;
+    setConfirming(true);
+    setConfirmError(null);
+    try {
+      await confirmPurchaseOrder(order.id, session.userId, "change_requested", {
+        reason: changeReason.trim(),
+        newExpectedDate: newExpectedDate || null,
+      });
+      setShowChangeForm(false);
+      setChangeReason("");
+      setNewExpectedDate("");
+    } catch (err) {
+      setConfirmError(err instanceof Error ? err.message : t("unableToConfirmPurchaseOrder"));
+    } finally {
+      setConfirming(false);
+    }
+  }
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0] ?? null;
@@ -279,6 +327,57 @@ export function OrderDetail() {
               {STATUS_LABEL[order.status]}
             </span>
           </div>
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-950">{t("confirmationSectionTitle")}</h2>
+            <p className="mt-1 text-sm text-slate-600">{t("confirmationSectionDescription")}</p>
+            <span
+              className={`mt-3 inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${CONFIRMATION_TONE[order.confirmationStatus]}`}
+            >
+              {t(
+                order.confirmationStatus === "confirmed"
+                  ? "confirmationConfirmed"
+                  : order.confirmationStatus === "change_requested"
+                    ? "confirmationChangeRequested"
+                    : "confirmationPending",
+              )}
+            </span>
+            {confirmError && <p className="mt-2 text-sm text-rose-700">{confirmError}</p>}
+          </div>
+          {canConfirmOrder && (
+            <div className="flex flex-col gap-2 sm:items-end">
+              <div className="flex gap-2">
+                <Button onClick={handleConfirmOrder} disabled={confirming}>
+                  {confirming ? t("confirmingOrder") : t("confirmOrderAction")}
+                </Button>
+                <Button variant="ghost" onClick={() => setShowChangeForm((v) => !v)} disabled={confirming}>
+                  {t("requestChangeAction")}
+                </Button>
+              </div>
+              {showChangeForm && (
+                <div className="w-full max-w-sm space-y-2 rounded-lg border border-slate-200 p-3 sm:w-80">
+                  <Input
+                    type="date"
+                    value={newExpectedDate}
+                    onChange={(e) => setNewExpectedDate(e.target.value)}
+                    placeholder={t("newExpectedDateLabel")}
+                  />
+                  <Input
+                    value={changeReason}
+                    onChange={(e) => setChangeReason(e.target.value)}
+                    placeholder={t("changeRequestReasonPlaceholder")}
+                  />
+                  <Button onClick={handleRequestChange} disabled={confirming || !changeReason.trim()} className="w-full">
+                    {confirming ? t("confirmingOrder") : t("requestChangeAction")}
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </Card>
 

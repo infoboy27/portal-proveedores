@@ -16,6 +16,11 @@ export type InvoiceStatus =
 
 export type PurchaseOrderStatus = "draft" | "open" | "in_review" | "partially_invoiced" | "closed";
 
+// Confirmacion de orden por el proveedor — independiente de `status` (que
+// refleja el ciclo de vida en BC). Registro solo-portal, nunca escribe a BC
+// directo (ver docs/BUSINESS_CENTRAL_INTEGRATION.md §7).
+export type PurchaseOrderConfirmationStatus = "pending" | "confirmed" | "change_requested";
+
 export interface Company {
   companyId: string;
   companyName: string;
@@ -85,6 +90,7 @@ export interface PurchaseOrder {
   orderDate: string | null;
   amount: number;
   status: PurchaseOrderStatus;
+  confirmationStatus: PurchaseOrderConfirmationStatus;
   sequence: number;
   bcId: string | null;
 }

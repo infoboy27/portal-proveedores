@@ -71,6 +71,7 @@ export function mapPurchaseOrder(row: Record<string, unknown>): PurchaseOrder {
     orderDate: (row.order_date as string) ?? null,
     amount: Number(row.amount ?? 0),
     status: (row.status as PurchaseOrder["status"]) ?? "open",
+    confirmationStatus: (row.confirmation_status as PurchaseOrder["confirmationStatus"]) ?? "pending",
     sequence: Number(row.sequence ?? 0),
     bcId: (row.bc_id as string) ?? null,
   };

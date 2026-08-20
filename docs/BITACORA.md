@@ -114,11 +114,50 @@ completo contra los 15 días comprometidos.
   responde 200 con los cambios en producción interna.
 
 **Pendiente:** el resto de las brechas de la entrada anterior siguen
-abiertas (confirmación de órdenes, validación de factura duplicada/monto/
-cantidad, estado `pending_payment`/`paid` + página de pagos, SMTP real,
-cron para `bc-sync-orders`). El `approver` escoped por `company_id` asume
-que "empresa" alcanza para aislar a un Analista — el concepto de
-`isGlobal` que existía en el frontend (`Company.isGlobal`) no tiene columna
-real en `companies`, así que se ignoró esa rama al escribir las políticas;
-si Adsemble necesita un Analista que vea más de una empresa, hay que
-agregar esa columna antes de usarla.
+abiertas (validación de factura duplicada/monto/cantidad, estado
+`pending_payment`/`paid` + página de pagos, SMTP real, cron para
+`bc-sync-orders`). El `approver` escoped por `company_id` asume que
+"empresa" alcanza para aislar a un Analista — el concepto de `isGlobal` que
+existía en el frontend (`Company.isGlobal`) no tiene columna real en
+`companies`, así que se ignoró esa rama al escribir las políticas; si
+Adsemble necesita un Analista que vea más de una empresa, hay que agregar
+esa columna antes de usarla.
+
+---
+
+## 2026-08-20 (continuación 2) — Confirmación de órdenes de compra
+
+**Hecho:**
+- `app/schema-v4.sql`: columna `purchase_orders.confirmation_status`
+  (`pending | confirmed | change_requested`, independiente de `status` que
+  refleja el ciclo de vida en BC), tabla `purchase_order_confirmations`
+  (auditoría) y RPC `rpc_confirm_purchase_order` (`SECURITY DEFINER`, único
+  camino de escritura — ni `purchase_orders.confirmation_status` ni la tabla
+  de auditoría tienen política de INSERT/UPDATE directa).
+- **Decisión de diseño explícita**: queda como registro solo-portal, nunca
+  escribe a Business Central. No hay una acción de confirmación de orden
+  confirmada en la API v2.0 para este tenant (`BUSINESS_CENTRAL_INTEGRATION.md §7`,
+  regla del proyecto: "no inventar endpoints") — mismo patrón que ya usa
+  `PoConfirmation` en el plan original para "cambios sensibles".
+- La RPC valida server-side que quien confirma sea `admin`/`superadmin` o
+  esté mapeado (`user_vendor_mapping`) al vendor dueño de la orden — no basta
+  con que el cliente mande el rol correcto. Verificado con dos pruebas antes
+  de tocar producción: (1) el proveedor de prueba intentando confirmar una
+  orden ajena → rechazado con error explícito; (2) admin confirmando/
+  solicitando cambio → escribe `confirmation_status` y el registro de
+  auditoría correctamente (probado en una transacción con `ROLLBACK`, sin
+  dejar datos de prueba).
+- Frontend: nueva tarjeta en `OrderDetail` (`Orders.tsx`) con el estado de
+  confirmación y, para los mismos roles que pueden cargar factura
+  (`admin`/`superadmin`/`supplier`/`service_uploader`), botones "Confirmar
+  orden" y "Solicitar cambio" (con fecha esperada nueva + motivo). Acción
+  nueva `confirmPurchaseOrder` en `domain.ts`, tipo `PurchaseOrderConfirmationStatus`
+  en `types.ts`, textos nuevos en `es.json` (no se tocó `en.json` — el
+  locale activo hoy es solo español, ver `i18n/index.ts`).
+- `tsc --noEmit` + `vite build` limpios, imagen reconstruida y desplegada.
+
+**Pendiente:** no se agregó vista para que Admin/Analista vean la cola de
+"cambios solicitados" pendientes de resolver — hoy solo se ve el estado en
+el detalle de cada orden individual. Si Adsemble necesita gestionar eso
+como cola (como Approvals.tsx para facturas), es un paso siguiente natural,
+no incluido en el alcance mínimo de "confirmación de órdenes" del correo.
