@@ -1,0 +1,213 @@
+import { useMemo, useState } from "react";
+import { useTranslation } from "@/i18n";
+import { useSessionStore } from "@/store/session";
+import { useDomainStore } from "@/store/domain";
+import { Card } from "@/components/ui/Card";
+import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
+import { Button } from "@/components/ui/Button";
+import { Modal } from "@/components/ui/Modal";
+import type { PortalUser, UserRole } from "@/store/types";
+
+const ROLE_LABEL: Record<UserRole, string> = {
+  superadmin: "Super admin",
+  admin: "Administrador",
+  approver: "Aprobador",
+  supplier: "Proveedor",
+};
+
+// Reconstruccion de `function VP()` — index-beautified.js:30017.
+// Simplificado respecto al original: el bundle usa react-hook-form + zod y
+// un flujo completo de creacion (nombre, email, password, limite de
+// aprobacion). Aqui se gestiona solo el `user_profiles` de un usuario que ya
+// existe en auth.users — crear la cuenta de auth real (password incluida)
+// requiere una Edge Function con la Admin API (service_role), que no puede
+// invocarse de forma segura desde el navegador con la clave anon. Ver nota
+// en store/domain.ts (updateUser).
+export function Users() {
+  const { t } = useTranslation();
+  const session = useSessionStore((s) => s.session);
+  const users = useDomainStore((s) => s.users);
+  const updateUser = useDomainStore((s) => s.updateUser);
+
+  const isAdmin = session.role === "admin" || session.role === "superadmin";
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState<UserRole | "all">("all");
+  const [editing, setEditing] = useState<PortalUser | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const scoped = useMemo(() => (isAdmin ? users : users.filter((u) => u.companyId === session.companyId)), [isAdmin, users, session.companyId]);
+
+  const filtered = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return scoped.filter((u) => {
+      const matchesQuery = query.length === 0 || u.username.toLowerCase().includes(query) || u.email.toLowerCase().includes(query);
+      const matchesRole = roleFilter === "all" || u.role === roleFilter;
+      return matchesQuery && matchesRole;
+    });
+  }, [scoped, search, roleFilter]);
+
+  async function handleSave(role: UserRole, companyId: string, isActive: boolean) {
+    if (!editing) return;
+    setSaving(true);
+    try {
+      await updateUser(editing.id, { role, companyId: companyId || null, isActive });
+      setEditing(null);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <section className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="space-y-2">
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">{t("users")}</h1>
+          <p className="max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
+            Gestion de accesos y roles. La creacion de cuentas nuevas requiere una funcion de servidor con permisos de
+            administrador (ver comentario en el codigo).
+          </p>
+        </div>
+      </section>
+
+      <Card className="p-4 sm:p-5">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar por nombre o correo" className="flex-1" />
+          <Select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value as UserRole | "all")} className="xl:w-[240px]">
+            <option value="all">Todos los roles</option>
+            {(Object.keys(ROLE_LABEL) as UserRole[]).map((role) => (
+              <option key={role} value={role}>
+                {ROLE_LABEL[role]}
+              </option>
+            ))}
+          </Select>
+        </div>
+      </Card>
+
+      <Card className="overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-left">
+            <thead className="bg-slate-50/90 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+              <tr>
+                <th className="px-6 py-4">Usuario</th>
+                <th className="px-6 py-4">Correo</th>
+                <th className="px-6 py-4">Rol</th>
+                <th className="px-6 py-4">Estado</th>
+                <th className="px-6 py-4 text-right">Acciones</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filtered.length > 0 ? (
+                filtered.map((u) => (
+                  <tr key={u.id} className="transition hover:bg-slate-50/80">
+                    <td className="px-6 py-4 font-semibold text-slate-950">{u.username || "-"}</td>
+                    <td className="px-6 py-4 text-sm text-slate-600">{u.email}</td>
+                    <td className="px-6 py-4 text-sm text-slate-600">{ROLE_LABEL[u.role]}</td>
+                    <td className="px-6 py-4">
+                      <span
+                        className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${
+                          u.isActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                        }`}
+                      >
+                        {u.isActive ? "Activo" : "Inactivo"}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      {isAdmin && (
+                        <Button variant="ghost" onClick={() => setEditing(u)}>
+                          Editar
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={5} className="px-6 py-14 text-center text-sm text-slate-500">
+                    {t("emptyState")}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <Modal open={!!editing} onClose={() => setEditing(null)} title={`Editar usuario`}>
+        {editing && (
+          <EditUserForm
+            key={editing.id}
+            user={editing}
+            saving={saving}
+            onCancel={() => setEditing(null)}
+            onSave={handleSave}
+          />
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+function EditUserForm({
+  user,
+  saving,
+  onCancel,
+  onSave,
+}: {
+  user: PortalUser;
+  saving: boolean;
+  onCancel: () => void;
+  onSave: (role: UserRole, companyId: string, isActive: boolean) => void;
+}) {
+  const [role, setRole] = useState<UserRole>(user.role);
+  const [companyId, setCompanyId] = useState(user.companyId ?? "");
+  const [isActive, setIsActive] = useState(user.isActive);
+  const companies = useDomainStore((s) => s.companies);
+
+  return (
+    <form
+      className="space-y-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSave(role, companyId, isActive);
+      }}
+    >
+      <div>
+        <p className="mb-1 text-sm font-medium text-slate-700">{user.email}</p>
+      </div>
+      <div>
+        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Rol</label>
+        <Select value={role} onChange={(e) => setRole(e.target.value as UserRole)}>
+          {(Object.keys(ROLE_LABEL) as UserRole[]).map((r) => (
+            <option key={r} value={r}>
+              {ROLE_LABEL[r]}
+            </option>
+          ))}
+        </Select>
+      </div>
+      <div>
+        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Empresa</label>
+        <Select value={companyId} onChange={(e) => setCompanyId(e.target.value)}>
+          <option value="">Sin empresa (global)</option>
+          {companies.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </Select>
+      </div>
+      <label className="flex items-center gap-2 text-sm text-slate-700">
+        <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
+        Usuario activo
+      </label>
+      <div className="flex justify-end gap-2 pt-2">
+        <Button type="button" variant="ghost" onClick={onCancel} disabled={saving}>
+          Cancelar
+        </Button>
+        <Button type="submit" disabled={saving}>
+          {saving ? "Guardando..." : "Guardar"}
+        </Button>
+      </div>
+    </form>
+  );
+}

@@ -1,102 +1,91 @@
-# Database Schema
+# Esquema de base de datos
 
-PostgreSQL via Prisma. This supersedes the legacy Supabase schema documented in `../extraido/01-esquema-tablas.md`; the mapping table in §9 shows how legacy tables/columns carry over.
+> Reemplaza una versión anterior escrita para un esquema Prisma nunca
+> implementado. Esto documenta el esquema **real** en `app/schema.sql`
+> (Postgres, dentro del Supabase self-hosted).
 
-## 1. Identity & access
+## Tablas
 
-**Company** — multi-company ready from day one.
-`id, bcCompanyId, name, isActive, createdAt`
+### `companies`
+`id, company_name, bc_code, disabled_at`
 
-**Vendor**
-`id, companyId→Company, bcVendorId (BC SystemId), vendorNumber, name, taxId (RNC), address, city, country, contactName, contactEmail, contactPhone, paymentTerms, currencyCode, vendorPostingGroup, paymentMethod, bankInfo (json, permission-gated field), status, portalAccessEnabled, lastSyncedAt`
+### `vendors`
+`id, vendor_number, tax_registration_number, company_name, status, valid_invoice_tax_number`
 
-**User**
-`id, email (unique), passwordHash, name, role (enum: VENDOR, VENDOR_ADMIN, BUYER, FINANCE, ADMIN), isActive, mfaEnabled, failedLoginAttempts, lockedUntil, lastLoginAt, createdAt, updatedAt`
+Se crea al vuelo desde `bc-sync-orders` cuando llega una orden de un proveedor
+nuevo. **No tiene perfil completo** (dirección, contacto, teléfono, términos
+de pago) — pendiente si Business Central expone esos campos para este tenant.
 
-**VendorUserMapping** (replaces legacy `user_vendor_mapping`)
-`userId→User, vendorId→Vendor, companyId→Company, isPrimary` — a `VENDOR`/`VENDOR_ADMIN` user must have at least one row here; **every vendor-scoped query filters by the set of `vendorId`s reachable through this table for the current user**, enforced in the domain service layer, never only in the UI.
+### `purchase_orders`
+`id, company_id→companies, vendor_id→vendors, order_number, order_date, amount, status, sequence`
 
-## 2. Purchase orders
+`status`: `draft | open | in_review | partially_invoiced | closed`.
 
-**PurchaseOrder**
-`id, bcId, companyId, vendorId, poNumber, orderDate, expectedReceiptDate, buyer, currencyCode, paymentTerms, location, status (enum: OPEN, PARTIALLY_RECEIVED, RECEIVED, PARTIALLY_INVOICED, INVOICED, CLOSED, CANCELLED), amount, receivedAmount, invoicedAmount, lastSyncedAt`
+### `purchase_orders_lines`
+`id, order_id→purchase_orders, company_id, description, quantity, price, amount, sequence`,
+más columnas agregadas para la exportación a BC: `bc_line_type`,
+`bc_line_object_number`, `bc_unit_cost`, `bc_tax_code`. Se sincronizan desde
+BC vía `bc-sync-orders` (se borran y reinsertan en cada corrida — no hay
+merge incremental de líneas).
 
-**PurchaseOrderLine**
-`id, purchaseOrderId, lineNo, itemOrAccountNo, description, quantity, unitOfMeasure, unitPrice, taxPercent, lineAmount, quantityReceived, quantityInvoiced` — outstanding quantity is derived (`quantity - quantityInvoiced`), not stored.
+### `invoices`
+`id, company_id, purchase_order_id, vendor_id, vendor_name, vendor_tax_id, invoice_number, invoice_tax_number (NCF), invoice_tax_security_number, invoice_date, invoice_duedate, fiscal_duedate, subtotal_amount, discount_amount, total_tax_amount, total_amount, status, file_path, filename, valid_tax_number, valid_invoice_tax_number, rejection_reason, erp_id, bc_invoice_id, bc_invoice_number, export_error_reason, exported_at, changed_by_user_id, created_at, updated_at`
 
-**PurchaseReceipt** / **PurchaseReceiptLine**
-`PurchaseReceipt: id, bcId, purchaseOrderId, receiptNumber, receiptDate`
-`PurchaseReceiptLine: id, receiptId, purchaseOrderLineId, quantity`
+`status`: `draft → uploaded → pending_approval → approved → ready_for_export → exported/processed`,
+con ramas a `rejected` y `export_error`.
 
-**PoConfirmation**
-`id, purchaseOrderId, userId, action (enum: CONFIRMED, CHANGE_REQUESTED), newExpectedDate, reason, comments, ipAddress, createdAt` — a change request never writes to BC directly; it is a portal-side record that surfaces to Buyers as a pending request (per brief §8, sensitive changes require internal approval, not an automatic BC write).
+**No existe** `pending_payment`/`paid` ni un campo de fecha posible de pago —
+brecha frente al compromiso de "consulta de pagos y estado de cuenta" (ver
+`BITACORA.md`).
 
-## 3. Invoices
+**No hay constraint de duplicado** sobre `(vendor_id, invoice_number)` — la
+validación de factura duplicada, monto y cantidad contra la orden está
+pendiente (el código tiene un comentario explícito: "se omite el flujo de
+factura duplicada").
 
-**Invoice**
-`id, vendorId, purchaseOrderId (nullable), supplierInvoiceNumber, invoiceDate, dueDate, currencyCode, subtotalAmount, discountAmount, taxAmount, totalAmount, status (enum: DRAFT, SUBMITTED, UNDER_REVIEW, APPROVED, REJECTED, SENT_TO_BC, POSTED, PARTIALLY_PAID, PAID, CANCELLED), rejectionReason, rejectedByUserId, rejectedAt, bcDocumentId, bcDocumentNumber, externalDocumentNumber, syncStatus, syncDate, syncError, changedByUserId, createdAt, updatedAt`
+### `invoice_lines`
+`id, invoice_id→invoices, company_id, description, quantity, price, amount, sequence`
 
-Unique constraint: **`(vendorId, supplierInvoiceNumber)`** — the duplicate-invoice guard from brief §12.
+### `invoice_status_history`
+`id, invoice_id→invoices, status, changed_by, reason, changed_at` — auditoría
+del ciclo de vida de la factura, poblada por la RPC `rpc_update_invoice_status`.
 
-**InvoiceLine**
-`id, invoiceId, purchaseOrderLineId (nullable), description, quantity, unitPrice, taxAmount, lineAmount`
+### `user_profiles`
+`id (=auth.users.id), username, email, role, company_id→companies, active, last_login`
 
-**InvoiceFiscalProfile** (extensible, one row per invoice, per-country shape)
-`id, invoiceId, countryCode, rnc, ncf, eNcf, fiscalTaxDate, itbisAmount` — kept out of the core `Invoice` model so a non-DR country doesn't inherit Dominican-only fields; the core model only carries generic `taxAmount`/`totalAmount`.
+`role` — `check` constraint: `admin | superadmin | approver | supplier`.
+Falta el rol interno para carga de facturas de proveedores recurrentes de
+servicios (compromiso pendiente, ver `BITACORA.md`).
 
-**InvoiceAttachment**
-`id, invoiceId, fileName, originalName, mimeType, size, storageKey, uploadedBy, hash, createdAt` — actual bytes live in `StorageProvider` (local/Blob/S3), never in Postgres.
+### `user_vendor_mapping`
+`user_id→user_profiles, vendor_id→vendors, company_id, is_primary` — vínculo
+usuario-proveedor (un `supplier` puede estar mapeado a uno o más vendors).
 
-**InvoiceStatusHistory**
-`id, invoiceId, status, changedByUserId, reason, changedAt` — covers both the approval/rejection trail and the audit requirement; a separate `InvoiceApproval` table was considered and dropped as redundant with this one for a linear workflow.
+## Funciones RPC
 
-## 4. Payments & ledger
+### `rpc_update_invoice_status(p_invoice_id, p_status, p_changed_by, p_reason)`
+Cambia el estado de una factura y registra el historial. Usada por
+`approveInvoice`/`rejectInvoice` en `store/domain.ts`.
 
-**Payment**
-`id, bcId, vendorId, invoiceId (nullable, resolved by document matching), paymentNumber, paymentDate, amount, currencyCode, paymentMethod, reference, status, lastSyncedAt`
+### `update_invoice_data(p_user_id, p_invoice jsonb)`
+Upsert de una factura completa (usada al cargar/editar datos de factura).
 
-**VendorLedgerEntry**
-`id, vendorId, bcEntryNo, documentType, documentNo, postingDate, amount, remainingAmount, description` — backs `/account-statement` (opening balance, invoices, credit notes, payments, running balance).
+## Row Level Security — estado real
 
-## 5. Documents
+Todas las tablas tienen RLS habilitado, pero las políticas actuales son
+`authenticated read-all` (cualquier usuario logueado lee cualquier fila) y
+escritura solo vía las RPCs (`security definer`) o `service_role`. Esto está
+marcado explícitamente como `TODO produccion` en `schema.sql`. **Es el
+bloqueante de seguridad #1** antes de manejar datos reales de proveedores —
+las políticas deben filtrar por `company_id`/`vendor_id` alcanzable desde
+`user_vendor_mapping` para el usuario de la sesión.
 
-**DocumentType** — `id, code, name, requiresExpiration, countryCode (nullable)`
-**VendorDocument** — `id, vendorId, documentTypeId, fileName, originalName, mimeType, size, storageKey, uploadDate, expirationDate, status (enum: PENDING_REVIEW, APPROVED, REJECTED, EXPIRED), approvedByUserId, comments`
+## Mapeo con el esquema legacy (Supabase del proveedor original)
 
-## 6. Messaging & notifications
-
-**MessageThread** — `id, contextType (enum: PURCHASE_ORDER, INVOICE, GENERAL), contextId (nullable), vendorId, createdAt`
-**Message** — `id, threadId, authorUserId, body, createdAt`
-**Notification** — `id, userId, type (enum matching brief §22), title, body, isRead, relatedEntityType, relatedEntityId, createdAt`
-
-## 7. Support
-
-**SupportTicket** — `id, vendorId, userId, subject, category, relatedPurchaseOrderId (nullable), relatedInvoiceId (nullable), priority, description, status (enum: OPEN, IN_PROGRESS, WAITING_VENDOR, RESOLVED, CLOSED), createdAt`
-**SupportTicketAttachment** — same shape as `InvoiceAttachment`, scoped to a ticket.
-
-## 8. Platform / integration
-
-**AuditLog** — `id, actorUserId, action, entity, entityId, before (json), after (json), ipAddress, createdAt`
-**SyncLog** — `id, entity, direction, startedAt, finishedAt, recordsProcessed, recordsCreated, recordsUpdated, recordsFailed, status, error, correlationId`
-**SyncError** — `id, syncLogId, entity, bcId, errorMessage, payload (json), resolved`
-**SystemSetting** — key/value(json) rows: notification settings, invoice tolerances, document-expiration alert windows, BC sync intervals, feature flags, default currency/timezone.
-
-No generic polymorphic `BusinessCentralReference` table: each synced entity carries its own `bcId`/`lastSyncedAt` columns directly, which is simpler and keeps idempotency keys local to the entity that needs them.
-
-## 9. Legacy → new schema mapping
-
-| Legacy (Supabase) | New | Notes |
+| Legacy | Actual | Nota |
 |---|---|---|
-| `user_profiles.role` (`admin`/`approver`/`supplier`) | `User.role` (`ADMIN`/`FINANCE`/`VENDOR`) | `VENDOR_ADMIN`/`BUYER` are new, no legacy source |
-| `user_vendor_mapping` | `VendorUserMapping` | same shape, `isPrimary` preserved |
-| `vendors` | `Vendor` | `tax_registration_number`→`taxId`, `company_name`→`name` |
-| `companies` | `Company` | |
-| `purchase_orders` / `purchase_orders_lines` | `PurchaseOrder` / `PurchaseOrderLine` | legacy lines were **not syncing** ("SIN DATOS" bug) — fixed in Phase 2, see `IMPLEMENTATION_PLAN.md` |
-| `invoices` | `Invoice` + `InvoiceFiscalProfile` | fiscal fields (`invoice_tax_number`/NCF, `invoice_tax_security_number`) split out; legacy NCF-extraction bug tracked for fix |
-| `invoice_lines` | `InvoiceLine` | |
-| `invoice_status_history` | `InvoiceStatusHistory` | same purpose |
-| *(none — file served via signed URL directly)* | `InvoiceAttachment` + `StorageProvider` | replaces direct Supabase Storage signed-URL calls from the frontend |
-
-## 10. Vendor isolation (enforcement point)
-
-Every Prisma query that touches `Vendor`, `PurchaseOrder`, `Invoice`, `Payment`, `VendorLedgerEntry`, `VendorDocument` for a `VENDOR`/`VENDOR_ADMIN` session **must** go through a repository helper that injects `WHERE vendorId IN (:allowedVendorIds)` derived server-side from `VendorUserMapping` — never from a client-supplied `vendorId`. This is the single most important invariant in the system (brief §38) and gets a dedicated test suite (see `IMPLEMENTATION_PLAN.md` Phase 1).
+| `user_profiles.role` | igual, mismo nombre de tabla | se reconstruyó 1:1 |
+| `user_vendor_mapping` | igual | se reconstruyó 1:1 |
+| `vendors` / `companies` | igual | se reconstruyó 1:1 |
+| `purchase_orders` / `purchase_orders_lines` | igual | bug legacy de líneas "SIN DATOS" corregido — `bc-sync-orders` sí trae líneas |
+| `invoices` / `invoice_lines` / `invoice_status_history` | igual | esquema y ciclo de estados reconstruidos; falta el tramo de pagos |

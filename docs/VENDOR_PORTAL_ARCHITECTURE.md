@@ -1,86 +1,96 @@
-# Vendor Portal — Architecture
+# Vendor Portal — Arquitectura
 
-## 1. Context
+> Este documento reemplaza una versión anterior que describía un plan
+> (Next.js + Prisma + Auth.js + BullMQ) nunca construido. Lo de abajo es la
+> arquitectura **real**, verificada contra el código que corre en producción
+> interna. Ver `docs/BITACORA.md` para el historial de esta corrección.
 
-Adsemble already runs a Vendor Portal in production (`https://portalproveedores.adsemble.do`), built by a third-party vendor on **Supabase** (Postgres + Auth + Storage) with **n8n** automations (`automate.smartautomation.cloud`) syncing to/from **Microsoft Dynamics 365 Business Central**. Only the compiled frontend bundle is available; there is no access to the original source. `../extraido/*.md` documents what was recovered by reverse-engineering that bundle: the table schema, frontend routes, invoice status lifecycle, and the webhook calls the frontend makes.
+## 1. Contexto
 
-This project **replaces** that system with a self-owned stack, in two stages:
+Adsemble operaba un Vendor Portal en `https://portalproveedores.adsemble.do`,
+construido por un tercero sobre **Supabase** (Postgres + Auth + Storage) con
+automatizaciones en **n8n** (`automate.smartautomation.cloud`) sincronizando
+contra Microsoft Dynamics 365 Business Central. Solo el bundle compilado del
+frontend estaba disponible — sin acceso al código fuente original. `extraido/*.md`
+documenta lo recuperado por ingeniería inversa de ese bundle.
 
-1. **Parity phase** — rebuild the current functionality (roles `admin` / `approver` / `supplier`, invoice lifecycle, BC sync, exports) on the new stack, fixing the bugs already observed in production (see `IMPLEMENTATION_PLAN.md`).
-2. **Expansion phase** — grow into the full scope described in the vendor-portal specification: `Vendor` / `Vendor Admin` / `Buyer` / `Finance` / `Administrator` roles, three-way matching, decoupled OCR, document center, messaging, notifications, support desk, multi-company/multi-currency.
+Este proyecto **reemplaza** ese sistema, pero conservando el mismo paradigma
+tecnológico (Supabase), no migrando a otro stack: se levantó una instancia
+**Supabase self-hosted** propia (sin depender del proveedor original), con
+Edge Functions propias para la integración con Business Central.
 
-Business Central remains the system of record for vendors, purchase orders, receipts, invoices and payments. The portal is the collaboration and workflow layer on top of it, with its own database for caching, workflow state, documents, audit and reporting.
+## 2. Stack real
 
-## 2. Layers
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ UI (Next.js App Router, React Server Components + client    │
-│ islands, Tailwind + shadcn/ui)                               │
-├─────────────────────────────────────────────────────────────┤
-│ Application Layer (Server Actions / Route Handlers)          │
-│  - input validation (Zod), auth/session, authorization guard │
-├─────────────────────────────────────────────────────────────┤
-│ Domain / Business Logic (framework-agnostic services)        │
-│  - VendorService, PurchaseOrderService, InvoiceService,      │
-│    ThreeWayMatchService, PaymentService, DocumentService,    │
-│    NotificationService, AuditService                         │
-├───────────────────────┬───────────────────┬──────────────────┤
-│ Database (Prisma/PG)  │ BC Integration     │ Storage          │
-│  - cache + workflow   │  - BusinessCentral │  - StorageProvider│
-│    state + audit      │    Client + sync   │    (local/blob/S3)│
-├───────────────────────┴───────────────────┴──────────────────┤
-│ Jobs / Sync Workers (BullMQ + Redis)                          │
-│  - scheduled + manual + on-demand BC sync, notification fanout│
-├─────────────────────────────────────────────────────────────┤
-│ Notifications (in-app + email; Teams/WhatsApp/SMS adapters)  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-Rule: **no business logic inside React components.** Server Actions/route handlers call domain services; domain services never import Next.js or React; BC-specific JSON never crosses into the UI — everything is mapped through DTOs.
-
-## 3. Tech stack
-
-| Concern | Choice |
+| Capa | Elección |
 |---|---|
-| Framework | Next.js (App Router), TypeScript |
-| Styling/UI kit | Tailwind CSS + shadcn/ui |
-| ORM / DB | Prisma + PostgreSQL |
-| Auth | Auth.js (email+password now, Entra ID provider ready for production) |
-| Validation | Zod (shared schemas client/server) |
-| Forms | React Hook Form |
-| Tables | TanStack Table (search/filter/sort/pagination/export) |
-| Jobs/Sync | BullMQ + Redis |
-| File storage | `StorageProvider` abstraction — `LocalStorageProvider` (dev), `AzureBlobStorageProvider` / `S3StorageProvider` (prod) |
-| Containerization | Docker + Docker Compose (`app`, `postgres`, `redis`) |
-| OCR (Phase 7) | Decoupled `OcrProvider` interface — Azure Document Intelligence as first implementation |
+| Frontend | Vite + React 18 + TypeScript, Tailwind CSS |
+| Estado | Zustand (`store/domain.ts`, `store/session.ts`) |
+| Ruteo | React Router |
+| Backend / datos | **Supabase self-hosted** (Postgres + Auth + Storage + Realtime + Studio + Kong), kit estándar de `supabase/supabase`, sin fork |
+| Integración con BC | Edge Functions en Deno (`infra/supabase/functions/`) — `bc-sync-orders`, `bc-export-invoice`, `extract-invoice-data`, cliente compartido `_shared/bc-client.ts` |
+| OCR | Microservicio propio en Python (Tesseract) — `infra/supabase/ocr-service/` — sin dependencia de IA de pago |
+| Despliegue | Docker + Docker Compose, Traefik como reverse proxy (`proveedores.jfmcss.com`) |
 
-This replaces the current Supabase + n8n stack. Nothing in the new codebase depends on Supabase; the `extraido/` material is reference-only, used to replicate schema/behavior/text, not a dependency.
+No hay Prisma, no hay Next.js, no hay BullMQ/Redis en este proyecto — esas
+fueron decisiones de un plan preliminar que quedó descartado en la práctica.
+
+## 3. Capas
+
+```
+┌──────────────────────────────────────────────┐
+│ UI (React + Zustand, Vite)                     │
+├──────────────────────────────────────────────┤
+│ Supabase client (@supabase/supabase-js)        │
+│  - queries directas a Postgres (RLS)           │
+│  - RPCs (rpc_update_invoice_status, ...)       │
+│  - Storage (PDFs de factura, signed URLs)      │
+│  - invoke() a Edge Functions                    │
+├──────────────────────────────────────────────┤
+│ Edge Functions (Deno, corren en el propio       │
+│ stack self-hosted, no en la nube de Supabase)  │
+│  - bc-sync-orders, bc-export-invoice,          │
+│    extract-invoice-data                        │
+├──────────────────────────────────────────────┤
+│ Business Central API v2.0 (OAuth2 client-       │
+│ credentials, Entra ID) + ocr-service (interno) │
+└──────────────────────────────────────────────┘
+```
+
+Regla: la UI nunca llama a Business Central directo — siempre pasa por una
+Edge Function con `service_role`, para no exponer credenciales de BC al
+cliente.
 
 ## 4. Roles
 
-| New role | Legacy equivalent | Summary |
+Definidos hoy en `user_profiles.role` (`check` constraint en `schema.sql`):
+`admin`, `superadmin`, `approver`, `supplier`.
+
+Compromiso con Adsemble (correo de alcance): Administrador, Proveedor,
+Analista, y un rol interno adicional para carga de facturas de proveedores
+recurrentes de servicios. Mapeo:
+
+| Rol comprometido | Rol actual | Estado |
 |---|---|---|
-| `VENDOR` | `supplier` | Vendor-company user, scoped to its own `vendorId`(s) |
-| `VENDOR_ADMIN` | *(new)* | Vendor user who also manages other users of the same vendor company |
-| `BUYER` | *(new, Phase 7)* | Internal purchasing user — read POs/vendors, message vendors |
-| `FINANCE` | `approver` | Internal AP user — review/approve/reject invoices, view payments |
-| `ADMIN` | `admin` | Full portal administration |
+| Administrador | `admin` / `superadmin` | ✅ |
+| Proveedor | `supplier` | ✅ |
+| Analista | `approver` | ✅ (falta ajustar copy en UI) |
+| Rol interno — facturas de proveedores recurrentes | *(no existe)* | ❌ pendiente — ver `BITACORA.md` |
 
-Vendor isolation is enforced **server-side on every query and mutation**, never only in the UI: a session resolves to one or more `vendorId`s (via `VendorUserMapping`, replacing legacy `user_vendor_mapping`), and every domain service scopes its queries by that set. See `DATABASE_SCHEMA.md` §"Vendor isolation".
+## 5. Aislamiento de datos por proveedor — estado real
 
-## 5. Non-functional requirements
+**Hoy el aislamiento es solo de UI**: cada página filtra `purchaseOrders`/
+`invoices` por `session.supplierId`/`session.companyId` en el cliente
+(`Orders.tsx`, `Approvals.tsx`, etc.). Las políticas RLS en Postgres son
+`authenticated read-all` (ver `schema.sql`, marcado ahí mismo como
+`TODO produccion`). Esto significa que cualquier usuario autenticado puede
+leer datos de otro proveedor llamando directo a la API de Supabase, sin pasar
+por la UI. **Bloqueante de seguridad antes de manejar datos reales de
+proveedores** — ver plan de cierre en `IMPLEMENTATION_PLAN.md`.
 
-- **Security:** RBAC + server-side authorization on every endpoint, CSRF protection, rate limiting, secure/HttpOnly cookies, file MIME/size validation, audit log on sensitive actions, no secrets in frontend bundles.
-- **Multi-currency:** every monetary field carries its BC `currencyCode`; never assume DOP.
-- **Multi-company:** `Company` is a first-class entity from day one, even though only one BC company exists today.
-- **Fiscal extensibility:** RNC/NCF/e-NCF/ITBIS are Dominican-specific fields modeled as a pluggable `FiscalProfile` per country, not hardcoded into core invoice logic.
-- **Timezone:** stored in UTC; presentation timezone configurable per tenant (defaults to `America/Santo_Domingo`, not hardcoded elsewhere).
-- **Idempotent sync:** BC → portal sync never creates duplicates when re-run (keyed on BC `SystemId`/document number).
-- **Observability:** structured logs (no secrets/PII), correlation IDs across sync jobs, future Sentry/Prometheus/Grafana hook points.
+## 6. Referencias
 
-## 6. Reference documents
-
-- `BUSINESS_CENTRAL_INTEGRATION.md` — BC API surface, auth, client design, entity gaps, sync strategy.
-- `DATABASE_SCHEMA.md` — Prisma schema, entities, relationships, legacy-table mapping.
-- `IMPLEMENTATION_PLAN.md` — phased delivery plan, including the parity bug-fix backlog.
+- `BUSINESS_CENTRAL_INTEGRATION.md` — qué endpoints de BC están confirmados y
+  cuáles no.
+- `DATABASE_SCHEMA.md` — esquema real en Postgres.
+- `IMPLEMENTATION_PLAN.md` — plan de cierre mapeado a los 15 días comprometidos.
+- `BITACORA.md` — avance fecha por fecha.

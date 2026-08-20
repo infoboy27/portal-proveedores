@@ -1,0 +1,29 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+    env_file: .env
+    restart: unless-stopped
+    networks:
+      - winu-bot-signal-network
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.proveedores.rule=Host(`proveedores.jfmcss.com`)
+      - traefik.http.routers.proveedores.entrypoints=websecure
+      - traefik.http.routers.proveedores.tls=true
+      - traefik.http.routers.proveedores.tls.certresolver=cloudflare
+      - traefik.http.routers.proveedores.middlewares=proveedores-headers
+      - traefik.http.middlewares.proveedores-headers.headers.browserxssfilter=true
+      - traefik.http.middlewares.proveedores-headers.headers.contenttypenosniff=true
+      - traefik.http.middlewares.proveedores-headers.headers.forcestsheader=true
+      - traefik.http.middlewares.proveedores-headers.headers.stsseconds=31536000
+      - traefik.http.middlewares.proveedores-headers.headers.framedeny=true
+      - traefik.docker.network=winu-bot-signal-network
+      - traefik.http.services.proveedores.loadbalancer.server.port=80
+
+networks:
+  winu-bot-signal-network:
+    external: true

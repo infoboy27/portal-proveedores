@@ -1,0 +1,141 @@
+// Tipos derivados del esquema recuperado por ingenieria inversa.
+// Ver: Portal-proveedores/extraido/01-esquema-tablas.md
+
+export type UserRole = "admin" | "superadmin" | "approver" | "supplier";
+
+export type InvoiceStatus =
+  | "draft"
+  | "uploaded"
+  | "pending_approval"
+  | "approved"
+  | "ready_for_export"
+  | "exported"
+  | "processed"
+  | "rejected"
+  | "export_error";
+
+export type PurchaseOrderStatus = "draft" | "open" | "in_review" | "partially_invoiced" | "closed";
+
+export interface Company {
+  companyId: string;
+  companyName: string;
+  isGlobal?: boolean;
+}
+
+export interface SessionState {
+  userId: string | null;
+  role: UserRole | null;
+  companyId: string | null;
+  supplierId: string | null;
+  activeCompany: Company | null;
+  availableCompanies: Company[];
+}
+
+export interface Invoice {
+  id: string;
+  companyId: string;
+  purchaseOrderId: string | null;
+  supplierId?: string;
+  vendorName: string;
+  vendorTaxId: string;
+  invoiceNumber: string;
+  invoiceTaxNumber: string; // NCF
+  invoiceTaxSecurityNumber: string;
+  invoiceDate: string;
+  invoiceDuedate: string | null;
+  fiscalDuedate: string | null;
+  subtotalAmount: number;
+  discountAmount: number;
+  totalTaxAmount: number;
+  total: number;
+  status: InvoiceStatus;
+  filePath: string | null;
+  filename: string | null;
+  pdfUrl?: string | null;
+  validInvoiceTaxNumber: boolean | null;
+  rejectionReason: string | null;
+  taxId?: string;
+  erpId: string | null;
+  bcInvoiceId: string | null;
+  bcInvoiceNumber: string | null;
+  exportErrorReason: string | null;
+  exportedAt: string | null;
+  paymentDueDate: string | null;
+  updatedAt: string;
+  createdAt: string;
+}
+
+export interface InvoiceLine {
+  id: string;
+  invoiceId: string;
+  companyId: string | null;
+  description: string | null;
+  quantity: number | null;
+  price: number | null;
+  amount: number | null;
+  sequence: number | null;
+}
+
+export interface PurchaseOrder {
+  id: string;
+  companyId: string;
+  vendorId: string;
+  orderNumber: string;
+  description: string;
+  orderDate: string | null;
+  amount: number;
+  status: PurchaseOrderStatus;
+  sequence: number;
+  bcId: string | null;
+}
+
+export interface PurchaseOrderLine {
+  id: string;
+  orderId: string;
+  companyId: string | null;
+  description: string | null;
+  quantity: number | null;
+  price: number | null;
+  amount: number | null;
+  sequence: number | null;
+  bcLineType: string | null;
+  bcLineObjectNumber: string | null;
+  bcUnitCost: number | null;
+  bcTaxCode: string | null;
+}
+
+export interface Supplier {
+  id: string;
+  vendorNumber: string;
+  taxRegistrationNumber: string;
+  displayName: string;
+  email?: string;
+  status: string;
+  blocked: boolean;
+  validInvoiceTaxNumber?: boolean;
+}
+
+export interface PortalCompany {
+  id: string;
+  name: string;
+  bcCode: string | null;
+  disabledAt: string | null;
+}
+
+export interface PortalUser {
+  id: string;
+  username: string;
+  email: string;
+  role: UserRole;
+  companyId: string | null;
+  isActive: boolean;
+}
+
+export interface AuditEvent {
+  id: string;
+  entityId: string;
+  status: string;
+  changedBy: string;
+  reason: string | null;
+  changedAt: string;
+}

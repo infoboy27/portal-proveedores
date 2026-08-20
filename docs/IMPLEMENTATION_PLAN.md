@@ -1,113 +1,87 @@
-# Implementation Plan
+# Plan de implementación
 
-Stack: Next.js + TypeScript + Prisma/PostgreSQL + Auth.js + Zod + React Hook Form + TanStack Table + BullMQ/Redis + Docker Compose. See `VENDOR_PORTAL_ARCHITECTURE.md` for the layering and `BUSINESS_CENTRAL_INTEGRATION.md` for the BC client design.
+> Reemplaza un plan anterior (Next.js + Prisma, fases 0-7 genéricas) escrito
+> antes de que existiera código real. Esto mapea el trabajo que falta contra
+> el **compromiso enviado a Adsemble por correo**: 15 días hábiles, alcance y
+> cronograma específicos. El avance real fecha por fecha vive en
+> `BITACORA.md` — este documento es el plan, no el registro.
 
-Order of work: **Phase 0 → Phase 1 (parity foundation) → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 → Phase 7 (expansion beyond parity)**.
+Stack real: ver `VENDOR_PORTAL_ARCHITECTURE.md`. El reloj de los 15 días
+hábiles **no ha arrancado** al momento de escribir esto — se usa el margen
+para cerrar brechas de seguridad/alcance sin presión, de modo que cuando
+arranque, el proyecto ya vaya adelantado en vez de empatado.
 
-## Known production bugs to fix (carried into the relevant phase below)
+## Pre-trabajo (no cuenta contra los 15 días)
 
-| # | Bug (from `extraido/02-rutas-y-modulos.md`) | Fixed in |
-|---|---|---|
-| 1 | Dashboard "Usuarios gestionados" KPI (2420) doesn't match actual `/users` count | Phase 6 |
-| 2 | Audit message "Factura vinculada a la orden ." — missing PO number in template | Phase 3 |
-| 3 | Vendors page — 4th stat card has no title | Phase 6 |
-| 4 | Invoice detail — NCF (`invoice_tax_number`) extracted equal to invoice number (wrong) | Phase 3 / OCR (Phase 7) |
-| 5 | Invoice detail — "Order lines: NO DATA" (PO lines never synced) | Phase 2 |
-| 6 | Approvals — empty-state text overflows right edge | Phase 3 |
-| 7 | Companies page — shows raw BC GUID as "Código" instead of a readable code | Phase 6 |
-| 8 | Missing Spanish accents across the entire UI | Phase 1 (i18n text pass, reuse corrected `textos-es.json`) |
+- [x] Código real puesto en git y en GitHub (este repo, carpetas `app/` e `infra/`).
+- [x] Documentación reescrita para reflejar la arquitectura real.
+- [ ] Agregar el rol interno faltante ("carga de facturas de proveedores
+      recurrentes de servicios") al `check` constraint de `user_profiles.role`
+      y a la UI.
+- [ ] Reemplazar RLS `authenticated read-all` por políticas reales de
+      aislamiento por `company_id`/`vendor_id` (bloqueante de seguridad,
+      técnicamente es contenido de "Días 3-6" pero no debe esperar).
 
-## Phase 0 — Discovery (before any BC-facing code)
+## Días 1-2 — Confirmación técnica con BC + arranque
 
-- Confirm actual BC API surface for this tenant: call `$metadata`, enumerate available entities (see `BUSINESS_CENTRAL_INTEGRATION.md` §4).
-- Recover/inspect the existing n8n scenarios (Flow 1: BC→Supabase sync, Flow 3: invoice export) if accessible, to learn the exact endpoints already proven to work for vendors/POs/invoices in Adsemble's BC environment.
-- Confirm Entra ID app registration scopes match what's needed (`API.ReadWrite.All` or the narrower BC-specific scope already granted).
-- Output: fill in the "confirmed" column of the entity table in `BUSINESS_CENTRAL_INTEGRATION.md` §4 before writing Phase 2 sync code.
+**Ya cumplido de sobra:** cliente OAuth2 validado en vivo contra el sandbox
+`Test672026` (`_shared/bc-client.ts`), `purchaseOrders` y `purchaseInvoices`
+confirmados y en uso real.
 
-## Phase 1 — Foundation & parity base
+Falta cerrar en este bloque:
+- Confirmar con Adsemble/BC si existen `purchaseReceipts` y
+  `vendorLedgerEntries` para este tenant (necesarios para confirmación de
+  órdenes y para pagos/estado de cuenta — ver `BUSINESS_CENTRAL_INTEGRATION.md §7`).
+- Kickoff formal: acceso a un proveedor real de prueba, decisión de dominio
+  final (`portalproveedores.adsemble.do` vs `proveedores.jfmcss.com`).
 
-- Repo scaffold: Next.js App Router + TypeScript, Tailwind + shadcn/ui, Docker Compose (`app`, `postgres`, `redis`), `.env.example`.
-- Prisma schema per `DATABASE_SCHEMA.md` §1 (Company, Vendor, User, VendorUserMapping) + migrations + seed data (`DYNASOFT S R L` / `PROV-000273` per brief §53, plus legacy-shaped fixtures from `extraido/01-esquema-tablas.md`).
-- Auth.js: email+password, session, password reset, account lockout after N failed attempts, Entra ID provider wired but optional (toggle via env), MFA hook point.
-- Role model: `VENDOR`, `VENDOR_ADMIN`, `FINANCE`, `ADMIN` active (`BUYER` modeled but unused until Phase 7). Legacy `admin`/`approver`/`supplier` seed data mapped per `DATABASE_SCHEMA.md` §9.
-- **Vendor isolation enforcement layer** (repository helpers that scope every query by the session's allowed `vendorId`s) — this is the first thing to build and the first thing to test (see Testing below).
-- `BusinessCentralClient` skeleton (token handling, retries, logging) + `MockBusinessCentralProvider`/`MicrosoftBusinessCentralProvider` interface split.
-- Vendor sync (`VendorService` + `BusinessCentralSyncService`), scheduled every 6h + manual trigger, idempotent on `bcVendorId`.
-- Base layout/navigation (Dashboard, Purchase Orders, Invoices, Payments, Account Statement, Documents, Messages, Notifications, Company Profile, Support) — empty/placeholder content where later phases fill it in.
-- Corrected Spanish copy pass reusing `extraido/textos-es.json` (bug #8) plus `textos-en.json` for the English locale.
-- Audit log wired to all auth events (`USER_LOGIN`, lockouts) from day one.
+## Días 3-6 — Auth, roles, aislamiento, sync de proveedores
 
-**Acceptance:** a seeded vendor user logs in, sees only its own vendor's profile (synced from Mock or real BC), and cannot reach another vendor's data by manipulating IDs (covered by tests, not just UI hiding).
+- Rol interno para facturas de proveedores recurrentes (si no se hizo en
+  pre-trabajo).
+- RLS real por proveedor (si no se hizo en pre-trabajo) — con test que
+  pruebe que un usuario de un vendor no puede leer datos de otro vendor
+  manipulando IDs.
+- Perfil de proveedor sincronizado completo (dirección, contacto, términos
+  de pago) — condicionado a qué campos exponga BC (Días 1-2).
+- Sync de proveedores con su propio schedule (hoy nace implícito dentro de
+  `bc-sync-orders`).
 
-## Phase 2 — Purchase Orders
+## Días 7-9 — Órdenes de compra
 
-- Resolve Phase 0 findings: implement `PurchaseOrderProvider`/`ReceiptProvider` against whatever was confirmed (standard, custom API, or still-mocked pending client access).
-- `PurchaseOrder`/`PurchaseOrderLine` sync, 5-minute interval, idempotent on `bcId`.
-- **Fix bug #5**: ensure PO lines actually populate (`quantity`, `quantityReceived`, `quantityInvoiced`) — this was the single biggest gap in the legacy system.
-- `/purchase-orders` list (search/filter by number, date, status, currency, amount range; TanStack Table with pagination/sorting/export).
-- `/purchase-orders/[id]` detail: header + lines + outstanding-quantity derivation + status badges (human-readable, not internal codes — brief §41).
-- Receipts sync + display within PO detail.
-- PO confirmation flow (`PoConfirmation`): Confirm / Request Change, storing user/IP/timestamp; change requests create an internal request, never a direct BC write (brief §8).
+- Botón de **confirmación de orden** (Confirmar / Solicitar cambio) en
+  `OrderDetail.tsx` — hoy no existe ninguna acción, solo lectura + carga de
+  factura. Si BC no expone una acción de confirmación real, queda como
+  registro solo-portal (nunca escribe a BC directo sin validación).
+- Automatizar `bc-sync-orders` con cron/schedule (hoy manual).
+- Mostrar recepciones en el detalle de orden, si BC las expone para este
+  tenant (Días 1-2 lo determina).
 
-## Phase 3 — Invoices
+## Días 10-13 — Facturas
 
-- `/invoices` list + `/invoices/new` (PO-first selection → line selection → form) + `/invoices/[id]`.
-- Validation service: PO exists & belongs to vendor & is open, amount/currency/tax coherence, quantity-to-invoice ≤ available, **duplicate guard on `(vendorId, supplierInvoiceNumber)`**.
-- File upload (PDF/JPG/PNG) via `StorageProvider`, size/MIME validated server-side.
-- `InvoiceFiscalProfile` fields (RNC/NCF/e-NCF/ITBIS) as an extensible per-country block, not core-hardcoded.
-- Status workflow `DRAFT → SUBMITTED → UNDER_REVIEW → APPROVED/REJECTED → SENT_TO_BC → POSTED`, backed by `InvoiceStatusHistory`.
-- **Fix bug #2**: audit/message templates always interpolate the PO number.
-- **Fix bug #6**: empty-state component fixed at the design-system level (shared component, not per-page).
-- Approval actions for `FINANCE` role (approve/reject with reason), visible rejection reason to the vendor.
-- BC export on approval per `BUSINESS_CENTRAL_INTEGRATION.md` §7, with retry UI for `syncError` cases.
-- **Note on bug #4 (NCF)**: this portal's Phase 3 always lets the vendor enter/correct NCF manually; the *automatic extraction* fix belongs to OCR (Phase 7) — until then there is no auto-extraction to be wrong, only manual entry, which structurally avoids the legacy bug.
+- Validación real de factura: duplicado por `(vendor_id, invoice_number)`,
+  monto/cantidad coherente contra la orden vinculada — hoy está
+  explícitamente omitida en el código.
+- SMTP real (hoy: mailer fake de desarrollo `supabase-mail`) para que
+  aprobación/rechazo y credenciales de acceso lleguen de verdad.
+- QA del flujo completo carga → aprobación → export a BC, contra un caso
+  real (no solo sandbox).
 
-## Phase 4 — Payments
+## Días 13-15 — Pagos, estado de cuenta, UAT, arranque
 
-- `Payment` / `VendorLedgerEntry` sync (15-minute interval; resolves Phase 0 findings same as Phase 2).
-- `/payments` list with search by invoice/PO/payment number/date.
-- `/account-statement`: opening balance, invoices, credit notes, payments, running balance; date-range filter; PDF/Excel export.
+- Nuevo estado `pending_payment`/`paid` en `invoices.status` + campo de
+  fecha posible de pago.
+- Sync de pagos/vendor ledger desde BC (condicionado a la confirmación de
+  Días 1-2).
+- Página de consulta de pagos + estado de cuenta.
+- UAT con un proveedor real.
+- Corte de dominio/DNS y arranque.
 
-## Phase 5 — Documents
+## Bugs legacy conocidos (heredados del portal anterior)
 
-- `DocumentType` catalog (seeded: Tax Certificate, Commercial Registration, Bank Certification, Insurance, Contract, NDA, Compliance, Other).
-- `/documents`: upload, review status (`PENDING_REVIEW/APPROVED/REJECTED/EXPIRED`), approver comments.
-- Expiration alerts at 30/15/7/1 days, surfaced on dashboard and via notifications.
-
-## Phase 6 — Administration
-
-- `/admin` dashboard (vendors, open POs, pending/rejected invoices, payments this month, documents expiring, BC sync errors) — **fix bug #1** by computing the "managed users" KPI from an actual query instead of a stale/wrong count.
-- `/admin/vendors` — activate/disable portal access, invite user, force sync, view sync errors. **Fix bug #7**: display `vendorNumber`/a human code, never the raw BC GUID.
-- `/admin/users` — create/invite/disable/reset/assign role/associate vendor; enforce a `VENDOR`/`VENDOR_ADMIN` user must have ≥1 `VendorUserMapping` row.
-- `/admin/invoices`, `/admin/documents` management views.
-- `/admin/integrations/business-central` — connection status, last sync per entity, failed records, Test Connection / Sync Now / Retry Failed.
-- `/admin/audit` — full `AuditLog` browser.
-- `/admin/settings` — company branding, currency/timezone defaults, invoice tolerances, document-expiration windows, BC sync intervals, feature flags.
-- **Fix bug #3**: vendors stat-card component always renders a title (design-system-level fix, same pattern as bug #6).
-- Vendor Admin capabilities (manage/invite/disable users of own vendor company, view org activity) activated here since it depends on the admin/user-management plumbing built in this phase.
-
-## Phase 7 — Expansion beyond parity
-
-- `BUYER` role activated: vendor/PO read access, vendor communication, observations.
-- Separate `FINANCE` responsibilities fully from `BUYER` where the legacy system conflated "approver" with both.
-- Three-way matching (PO vs Receipt vs Invoice) with configurable price/amount tolerances, discrepancy surfacing (`Quantity/Price/Tax Variance`, `Receipt Missing`, `Duplicate Invoice`).
-- OCR service (`OcrProvider` interface, Azure Document Intelligence first implementation) for invoice field pre-fill, always vendor-correctable, never sole source of truth — this is also where bug #4's root cause (bad automatic NCF extraction) gets a real fix via a proper OCR + validation pass instead of the legacy naive extraction.
-- Messaging (`MessageThread`/`Message`) contextualized to PO/Invoice.
-- Notification center expansion: Teams/WhatsApp/SMS/webhook adapters (in-app + email already live since Phase 1/3).
-- `/support` ticketing.
-- Global search across PO/Invoice/Payment/Document numbers.
-- Multi-company UI surfacing (`Company` switcher) if/when a second BC company is onboarded.
-
-## Testing (cross-cutting, built alongside each phase, not deferred)
-
-- Vendor isolation: automated tests proving a `VENDOR` session for Vendor A cannot read/write Vendor B's PO/Invoice/Payment/Document records even with a manipulated ID (Phase 1, gating criterion before Phase 2 starts).
-- Invoice duplicate detection & validation rules (Phase 3).
-- PO ownership checks (Phase 2/3).
-- Three-way matching calculations (Phase 7).
-- Permission matrix per role (Phase 1 baseline, extended each phase a new role gains capability).
-- BC DTO mapping correctness (Phase 0/2/3/4, one test per entity mapper).
-- Sync idempotency (Phase 1 vendor sync as the template test, replicated per entity).
-
-## MVP definition of done
-
-The end-to-end flow in brief §58 (admin syncs vendors → vendor logs in → syncs its POs → creates and submits an invoice against a PO → Finance approves → invoice exports to BC → BC posts payment → payment syncs back → vendor sees it paid) is complete at the end of **Phase 4**. Phases 5–7 are enterprise-hardening and scope expansion on top of a working MVP, not prerequisites to it.
+Documentados en `extraido/02-rutas-y-modulos.md`. El rewrite ya corrige el
+más grave (líneas de orden "SIN DATOS"). Falta una pasada de QA explícita
+que confirme uno por uno los demás (KPI de usuarios gestionados, tarjeta de
+proveedores sin título, overflow en estado vacío de aprobaciones, código de
+empresa mostrando el GUID crudo de BC, acentos en español) contra la UI
+actual — no se ha hecho esa verificación todavía.

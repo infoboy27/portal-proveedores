@@ -1,32 +1,34 @@
-# Portal de Proveedores Adsemble — material recuperado
+# Portal de Proveedores Adsemble
 
-Lo que se pudo obtener del sitio en producción `https://portalproveedores.adsemble.do`.
+Reconstrucción propia del Vendor Portal de Adsemble (antes en
+`portalproveedores.adsemble.do`, operado por un tercero sobre Supabase + n8n).
+Este repo tiene el código real de la reconstrucción **y** el material de
+ingeniería inversa que sirvió de base.
 
-> ⚠️ **Importante:** el sitio publica solo el *build* compilado y minificado (React/Vite).
-> El **código fuente original (componentes JSX/TS) NO está disponible** — solo lo tiene el
-> proveedor que lo desarrolló. Lo que hay aquí es: (1) los archivos desplegados tal cual,
-> (2) el bundle formateado para lectura, y (3) todo lo útil extraído por ingeniería inversa.
-> El código fuente limpio y propio saldrá de la **reconstrucción** (ver el plan del proyecto).
-
-## Contenido
+## Estructura
 
 | Ruta | Qué es |
 |------|--------|
-| `build-original/index.html` | HTML shell desplegado |
-| `build-original/assets/index-C-1YYMu8.js` | Bundle JS de la app (minificado, 686 KB) |
-| `build-original/assets/index-CUsZfOKg.css` | CSS compilado (Tailwind) |
-| `index-beautified.js` | El mismo bundle **formateado** (legible; nombres de variables siguen ofuscados) |
-| `extraido/00-supabase-config.md` | URL y clave pública de Supabase, storage |
-| `extraido/01-esquema-tablas.md` | Tablas, columnas confirmadas y funciones RPC |
-| `extraido/02-rutas-y-modulos.md` | Rutas del frontend y estados del ciclo de factura |
-| `extraido/03-automatizacion.md` | Webhooks de extracción y visualización de PDF |
-| `extraido/textos-es.json` | 394 textos de interfaz en español |
-| `extraido/textos-en.json` | 324 textos de interfaz en inglés |
+| `app/` | Frontend (Vite + React + TS + Zustand + Tailwind) — código real, desplegado en `proveedores.jfmcss.com` |
+| `infra/supabase/` | Edge Functions (integración con Business Central, OCR) que corren sobre el Supabase self-hosted — ver `infra/supabase/README.md` |
+| `docs/` | Arquitectura, esquema de base de datos, integración con BC, y el **plan de implementación** mapeado a los 15 días comprometidos con Adsemble |
+| `docs/BITACORA.md` | **Registro vivo de avance** — qué se hizo, qué falta, actualizado en cada sesión de trabajo |
+| `build-original/`, `index-beautified.js`, `extraido/` | Material de ingeniería inversa del portal legacy (solo se tuvo acceso al bundle compilado, nunca al código fuente original) — usado como referencia para replicar esquema, rutas y textos |
 
-## Cómo usarlo
+## Por dónde empezar
 
-- El `index-beautified.js` sirve para **entender la lógica** (llamadas a Supabase, flujos, validaciones).
-- Lo de `extraido/` es la base para **replicar el esquema y los textos** en la reconstrucción.
-- Los `textos-*.json` se reutilizan directamente (corrigiendo los acentos que faltan).
+1. `docs/BITACORA.md` — estado actual, qué está hecho y qué falta.
+2. `docs/IMPLEMENTATION_PLAN.md` — el plan de cierre, mapeado al cronograma comprometido.
+3. `docs/VENDOR_PORTAL_ARCHITECTURE.md` — cómo está armado el sistema.
 
-Generado el 2026-07-22 a partir del sitio en producción.
+## Material de ingeniería inversa (legacy)
+
+Generado el 2026-07-22 a partir de `https://portalproveedores.adsemble.do` —
+solo el *build* compilado estaba disponible, sin código fuente original.
+
+- `index-beautified.js` — el bundle formateado, usado para **entender la lógica** original (llamadas a Supabase, flujos, validaciones).
+- `extraido/00-supabase-config.md` — config del Supabase del proveedor original.
+- `extraido/01-esquema-tablas.md` — tablas, columnas y RPCs reconstruidas.
+- `extraido/02-rutas-y-modulos.md` — rutas y ciclo de estados de factura, incluye bugs legacy conocidos.
+- `extraido/03-automatizacion.md` — webhooks del n8n original.
+- `extraido/textos-es.json` / `textos-en.json` — textos de interfaz, reutilizados (corrigiendo acentos) en `app/`.
