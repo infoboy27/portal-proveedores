@@ -230,6 +230,7 @@ export function InvoiceDetail() {
   const [invoiceNumberInput, setInvoiceNumberInput] = useState("");
   const [invoiceDateInput, setInvoiceDateInput] = useState("");
   const [invoiceTaxNumberInput, setInvoiceTaxNumberInput] = useState("");
+  const [invoiceTotalInput, setInvoiceTotalInput] = useState("");
   const [confirmError, setConfirmError] = useState<string | null>(null);
 
   const invoice = invoices.find((inv) => inv.id === invoiceId);
@@ -245,6 +246,7 @@ export function InvoiceDetail() {
     setInvoiceNumberInput(invoice?.invoiceNumber ?? "");
     setInvoiceDateInput(invoice?.invoiceDate ?? "");
     setInvoiceTaxNumberInput(invoice?.invoiceTaxNumber ?? "");
+    setInvoiceTotalInput(invoice?.total ? String(invoice.total) : "");
   }, [invoice?.id]);
 
   if (!invoice) {
@@ -293,6 +295,11 @@ export function InvoiceDetail() {
       setConfirmError("La fecha de factura y el Comprobante Fiscal (NCF) son obligatorios para poder exportar a Business Central.");
       return;
     }
+    const totalAmount = Number(invoiceTotalInput);
+    if (!invoiceTotalInput.trim() || !Number.isFinite(totalAmount) || totalAmount <= 0) {
+      setConfirmError("El total de la factura debe ser un numero mayor a cero.");
+      return;
+    }
     setConfirmError(null);
     setBusy(true);
     try {
@@ -300,8 +307,11 @@ export function InvoiceDetail() {
         invoiceNumber: invoiceNumberInput.trim(),
         invoiceDate: invoiceDateInput,
         invoiceTaxNumber: invoiceTaxNumberInput.trim(),
+        totalAmount,
       });
       await confirmInvoiceForApproval(invoice!.id, session.userId);
+    } catch (err) {
+      setConfirmError(err instanceof Error ? err.message : "No fue posible confirmar la factura.");
     } finally {
       setBusy(false);
     }
@@ -393,7 +403,7 @@ export function InvoiceDetail() {
               <p className="text-sm text-slate-500">
                 Completa estos datos antes de confirmar — son los que viajan a Business Central al exportar.
               </p>
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div>
                   <label className="text-xs uppercase tracking-[0.18em] text-slate-500">{t("invoiceNumber")}</label>
                   <Input
@@ -420,6 +430,23 @@ export function InvoiceDetail() {
                     placeholder="E31..."
                     className="mt-1"
                   />
+                </div>
+                <div>
+                  <label className="text-xs uppercase tracking-[0.18em] text-slate-500">{t("invoiceTotalLabel")}</label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={invoiceTotalInput}
+                    onChange={(e) => setInvoiceTotalInput(e.target.value)}
+                    placeholder="0.00"
+                    className="mt-1"
+                  />
+                  {order && (
+                    <p className="mt-1 text-xs text-slate-500">
+                      {t("purchaseOrder")}: {formatCurrency(order.amount)}
+                    </p>
+                  )}
                 </div>
               </div>
               {confirmError && <p className="text-sm text-rose-700">{confirmError}</p>}

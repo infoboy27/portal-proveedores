@@ -49,13 +49,21 @@ interface DomainStore {
     action: "confirmed" | "change_requested",
     input?: { newExpectedDate?: string | null; reason?: string | null; comments?: string | null },
   ) => Promise<void>;
-  // Captura manual de los datos que hoy nadie llena (ver PLAN-RECONSTRUCCION.md:
-  // el webhook de OCR del proveedor original nunca se conecto). El proveedor
-  // completa esto antes de confirmar — son 2 de los 3 datos que Fase A
-  // necesita para exportar a Business Central (fecha de factura + NCF).
+  // Captura manual de los datos que hoy nadie llena (el webhook de OCR del
+  // proveedor original nunca se conecto). El proveedor completa esto antes
+  // de confirmar — son los datos que Fase A necesita para exportar a
+  // Business Central (fecha de factura + NCF), mas el total.
+  //
+  // Dias 10-13: valida duplicado (mismo vendor + mismo numero de factura,
+  // ver indice unico en schema-v5.sql) y que el total no supere el monto de
+  // la orden de compra vinculada. Se omite intencionalmente la validacion
+  // de cantidades por linea porque este rebuild no tiene un formulario de
+  // carga de lineas de factura (ver comentario en Invoices.tsx: "se omite
+  // el formulario para agregar lineas de factura manualmente") — no hay
+  // contra que validar cantidad todavia.
   updateInvoiceData: (
     invoiceId: string,
-    patch: { invoiceNumber: string; invoiceDate: string; invoiceTaxNumber: string },
+    patch: { invoiceNumber: string; invoiceDate: string; invoiceTaxNumber: string; totalAmount: number },
   ) => Promise<void>;
   uploadInvoice: (input: {
     companyId: string;
@@ -171,12 +179,48 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
   },
 
   async updateInvoiceData(invoiceId, patch) {
+    const current = get().invoices.find((inv) => inv.id === invoiceId);
+    if (!current) throw new Error("Factura no encontrada.");
+
+    const invoiceNumber = patch.invoiceNumber.trim();
+
+    // Duplicado: mismo proveedor + mismo numero de factura ya existente en
+    // otra factura. El bundle original mostraba un modal para esto al subir
+    // (ver comentario en Invoices.tsx) — aqui se valida con un mensaje
+    // explicito antes de guardar, en vez de dejar que falle el indice unico
+    // de base de datos (schema-v5.sql) sin contexto para el usuario.
+    if (invoiceNumber && current.supplierId) {
+      const { data: duplicate, error: dupError } = await supabase
+        .from("invoices")
+        .select("id")
+        .eq("vendor_id", current.supplierId)
+        .eq("invoice_number", invoiceNumber)
+        .neq("id", invoiceId)
+        .maybeSingle();
+      if (dupError) throw dupError;
+      if (duplicate) {
+        throw new Error(`Ya existe una factura con el numero "${invoiceNumber}" para este proveedor.`);
+      }
+    }
+
+    // Monto: si la factura esta vinculada a una orden de compra, el total
+    // no puede superar el monto de esa orden.
+    if (current.purchaseOrderId) {
+      const order = get().purchaseOrders.find((po) => po.id === current.purchaseOrderId);
+      if (order && patch.totalAmount > order.amount) {
+        throw new Error(
+          `El total de la factura (${patch.totalAmount.toFixed(2)}) supera el monto de la orden de compra vinculada (${order.amount.toFixed(2)}).`,
+        );
+      }
+    }
+
     const { error } = await supabase
       .from("invoices")
       .update({
-        invoice_number: patch.invoiceNumber,
+        invoice_number: invoiceNumber,
         invoice_date: patch.invoiceDate,
         invoice_tax_number: patch.invoiceTaxNumber,
+        total_amount: patch.totalAmount,
       })
       .eq("id", invoiceId);
     if (error) throw error;

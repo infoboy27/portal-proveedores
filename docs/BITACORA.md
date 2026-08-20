@@ -195,3 +195,48 @@ intervalo o el patrón N+1 antes del corte a producción — documentado en
 **Pendiente:** Días 7-9 completos salvo "mostrar recepciones en el detalle
 de orden", que sigue condicionado a si BC expone `purchaseReceipts` para
 este tenant (Días 1-2, sin confirmar todavía).
+
+---
+
+## 2026-08-20 (continuación 4) — Validación real de factura (duplicado + monto)
+
+**Hallazgo antes de empezar:** no existía ningún campo para capturar el
+monto de la factura — `total_amount` se quedaba siempre en 0 porque
+ninguna pantalla lo escribía (el KPI de Dashboard, el umbral de "alto
+valor" en Approvals, y el total mostrado en Invoices/InvoiceDetail
+funcionaban todos sobre datos que nunca se llenaban). "Validar montos" no
+era posible sin esto, así que se agregó como parte de esta tarea, no fue
+scope creep — sin un campo de monto no había nada que validar.
+
+**Hecho:**
+- `app/schema-v5.sql`: índice único parcial `(vendor_id, invoice_number)`
+  ignorando facturas con número todavía vacío (se crean así al subir el
+  PDF, antes de que el proveedor lo complete). Probado antes de aplicar:
+  0 duplicados existentes en la base viva; después de aplicar, un intento
+  de insertar dos facturas con mismo vendor+número fue rechazado
+  correctamente (probado en transacción revertida).
+- `domain.ts:updateInvoiceData` ahora valida **antes** de guardar (mensaje
+  explícito, no el error crudo de Postgres): (1) duplicado por
+  vendor+número, (2) si la factura está vinculada a una orden, que el
+  total no supere el monto de esa orden. Firma extendida con `totalAmount`.
+- `InvoiceDetail` (`Invoices.tsx`): nuevo campo "Total de la factura" en el
+  formulario de confirmación (junto a número/fecha/NCF), con el monto de la
+  orden vinculada como referencia visible. `handleConfirm` ahora valida el
+  monto localmente y **quedó envuelto en try/catch** (antes no lo estaba —
+  un error de `updateInvoiceData`/`confirmInvoiceForApproval` se perdía
+  como promesa rechazada sin mostrarse al usuario).
+- **Validación de cantidad explícitamente fuera de alcance, documentado en
+  el código**: este rebuild no tiene formulario para cargar líneas de
+  factura (el bundle original sí lo tenía, se omitió al simplificar — ver
+  comentario histórico en `Invoices.tsx`). No hay contra qué comparar
+  cantidad todavía; agregarlo requeriría construir ese formulario primero,
+  que es un cambio de alcance mayor, no una validación puntual.
+- `tsc --noEmit` falló dos veces antes de compilar limpio: un fragmento de
+  comentario mal editado quedó pegado a una firma de tipo, y un typo
+  (`current.vendorId` en vez de `current.supplierId`, que es como se llama
+  el campo en el tipo `Invoice` del frontend aunque la columna real en la
+  base es `vendor_id`). Ambos corregidos antes de desplegar.
+
+**Pendiente de Días 10-13:** SMTP real — sigue en el mailer fake de
+desarrollo, necesita credenciales de un proveedor real que solo Jonatan
+puede definir (no hay nada que inventar aquí).

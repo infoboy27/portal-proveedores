@@ -63,6 +63,7 @@
   "unit": "Unidad",
   "unitPrice": "Precio unitario",
   "lineAmount": "Importe linea",
+  "invoiceTotalLabel": "Total de la factura",
   "confirmationSectionTitle": "Confirmacion de la orden",
   "confirmationSectionDescription": "Confirma la orden tal como esta, o solicita un cambio antes de facturar contra ella.",
   "confirmationStatusLabel": "Estado de confirmacion",

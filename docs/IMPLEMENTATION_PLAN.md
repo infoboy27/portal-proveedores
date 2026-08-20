@@ -56,11 +56,15 @@ Falta cerrar en este bloque:
 
 ## Días 10-13 — Facturas
 
-- Validación real de factura: duplicado por `(vendor_id, invoice_number)`,
-  monto/cantidad coherente contra la orden vinculada — hoy está
-  explícitamente omitida en el código.
+- [x] Validación real de factura: duplicado por `(vendor_id, invoice_number)`
+      (índice único + chequeo previo con mensaje) y monto contra la orden
+      vinculada — 2026-08-20, ver `BITACORA.md`. Cantidad por línea queda
+      fuera de alcance porque no existe formulario de líneas de factura en
+      este rebuild (documentado en el código, no es un olvido).
 - SMTP real (hoy: mailer fake de desarrollo `supabase-mail`) para que
-  aprobación/rechazo y credenciales de acceso lleguen de verdad.
+  aprobación/rechazo y credenciales de acceso lleguen de verdad. **Necesita
+  credenciales de un proveedor SMTP real de Jonatan/Adsemble antes de
+  poder avanzar.**
 - QA del flujo completo carga → aprobación → export a BC, contra un caso
   real (no solo sandbox).
 
