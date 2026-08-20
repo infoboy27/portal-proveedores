@@ -751,3 +751,94 @@ construir sobre eso: mostrar recepciones en el detalle de orden, y
 reemplazar el estado de pago manual de `/payments` por datos reales de
 `vendorLedgerEntries` — el trabajo de aplicación que quedaba condicionado
 a esta confirmación.
+
+---
+
+## 2026-08-20 (continuación 16) — QA del ciclo completo: 3 bugs reales encontrados y corregidos
+
+Jonatan pidió correr el ciclo completo real (invitación → correo →
+confirmación de orden → carga de factura → posteo en BC) para saber el
+estatus real del proyecto. Se ejecutó en vivo contra `proveedores.jfmcss.com`
+(nunca contra Producción de BC), usando un usuario nuevo real creado para
+la prueba (`jonathanmaria+qa2026@gmail.com`, rol `supplier`, mapeado a
+`PROV-000278`).
+
+**Ciclo probado de punta a punta:**
+1. Superadmin invita al usuario desde `Users.tsx` → correo real enviado
+   (confirmado por `POST /invite` → 200 en logs de GoTrue, no solo por la UI)
+   → registrado en `security_audit_log` con el admin real como actor.
+2. Onboarding: enlace de invitación → `/set-password` → contraseña creada →
+   dashboard de `supplier` correctamente escopado.
+3. Confirmación de la orden `CP-000211` (ya existía, confirmada).
+4. Carga de factura (PDF de prueba) → formulario manual de datos (NCF,
+   fecha, monto) → `pending_approval`.
+5. Aprobación por admin → `approved`.
+6. Exportación a Business Central → factura real creada en BC.
+
+**3 bugs reales encontrados y corregidos (commits `788f454`, `fa3c221`,
+`0a80e01`, ya en `origin/main`):**
+
+- **QA-001 — fechas un día antes en toda la app.** `new Date("YYYY-MM-DD")`
+  se parsea como medianoche UTC; al formatear con `toLocaleDateString("es-DO")`
+  en huso horario negativo (UTC-4, el de RD) el resultado retrocede un día.
+  Afectaba `Orders.tsx`, `Invoices.tsx` y `Payments.tsx` — la factura de
+  prueba se guardó con fecha `2026-08-20` pero se mostraba como `19/8/2026`.
+  Corregido parseando los componentes año/mes/día como fecha local.
+
+- **QA-002 — export a BC se marcaba "processed" sin copiar ninguna línea.**
+  `bc-export-invoice` omite silenciosamente cualquier línea de la orden sin
+  `bc_line_object_number` y aun así marcaba la factura como exportada con
+  éxito. Al exportar la factura de prueba real se creó `CF-001920` en BC
+  con **0 líneas y RD$0.00**, sin ninguna señal de error en el portal — solo
+  se detectó consultando la factura directo en BC. Corregido: si la orden
+  tiene líneas pero ninguna se pudo copiar, ahora falla con `export_error`
+  explicando la causa exacta.
+
+- **QA-003 — proveedores en blanco por truncamiento de PostgREST.** `fetchAll()`
+  traía la tabla `vendors` completa con un solo `select("*")`, pero
+  PostgREST limita cada respuesta a `PGRST_DB_MAX_ROWS=1000`. El sandbox
+  tiene **3,495 vendors** (Producción: ~32,957) — cualquier vendor fuera de
+  esa primera página quedaba invisible en el frontend, mostrando "-" como
+  nombre de proveedor en Órdenes/Facturas/Pagos aunque el JOIN en la base de
+  datos resolviera el nombre bien. **8 de las 11 órdenes de prueba** tenían
+  el proveedor en blanco antes de este fix. Corregido con `fetchAllRows()`,
+  que pagina con `.range()` hasta traer la tabla completa.
+
+**Root-cause del dato roto detrás de QA-002 (no es bug de código, es dato
+de prueba):** la línea de la orden `CP-000211` se había creado en
+continuación 13 como tipo `Account` sin una cuenta contable real asignada
+(el workaround de esa sesión evitaba el problema de unidad de medida, pero
+dejaba `lineObjectNumber` vacío tanto en BC como en la copia local).
+Corregido en BC (PATCH a la línea real, cuenta `6107 - Servicios`) y en la
+tabla `purchase_orders_lines` para que coincida.
+
+**Bloqueo real nuevo, del lado de BC, no corregible desde el portal:**
+al reintentar el export corregido se creó `CF-001921` (RD$5,000, con línea
+real, vinculada correctamente al vendor `PROV-000278`) — pero
+**`Microsoft.NAV.post` lo rechaza**: primero por fecha de posteo fuera del
+rango permitido (corregido cambiando la fecha), y después por
+**"Fiscal Document No. must have a value"** — un campo de cumplimiento
+fiscal específico de República Dominicana (NCF) que **no está expuesto en
+la API estándar v2.0** de Business Central en ningún campo del payload de
+`purchaseInvoices`. Igual que con `Gen. Bus. Posting Group` (continuación
+13), esto necesitaría una extensión AL propia (Custom API) para poder
+setearlo por API — no se intentó en esta sesión por ser una decisión de
+alcance, no un bug a corregir sobre la marcha. **`CF-001921` queda como
+borrador válido en el sandbox**, con línea y monto correctos, listo para
+posteo manual o para retomar cuando se decida construir esa extensión.
+
+**No se pudo cerrar en esta sesión:** confirmar un match real de
+`bc-sync-payments` contra una factura efectivamente posteada — sigue
+bloqueado por el punto anterior (posteo automático via API).
+
+**Otros hallazgos, no bugs:** el intento de loguearse como `c.cuevas` (la
+admin real de Adsemble) para probar el flujo desde su cuenta fue bloqueado
+por el propio entorno de automatización por tratarse de una cuenta de un
+tercero real — correcto, no se insistió; en su lugar se usó el superadmin
+propio, que tiene los mismos permisos de aprobación/creación. También se
+confirmó que la sesión de Supabase Auth es compartida vía `localStorage`
+entre pestañas del mismo navegador — abrir una sesión distinta en una
+pestaña nueva reemplaza silenciosamente la sesión de las demás pestañas
+abiertas al mismo dominio. Es comportamiento estándar de Supabase Auth, no
+un bug, pero vale la pena tenerlo presente si se prueba con varios roles a
+la vez.
