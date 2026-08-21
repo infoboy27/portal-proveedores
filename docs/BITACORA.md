@@ -936,3 +936,58 @@ punta. El Expense Class Code también tiene el camino de API resuelto,
 pendiente solo de una regla de negocio. El único bloqueo real que queda
 para posteo 100% automático es de datos maestros (VAT Posting Group en
 cuentas), no de código ni de integración.**
+
+---
+
+## 2026-08-20 (continuación 18) — Ciclo completo cerrado: primer posteo real y primer match de pago confirmado
+
+Jonatan pidió "arregla todo, prueba todo end-to-end" — cerrar el bloqueo
+de datos maestros que quedó pendiente (VAT Posting Group) y probar el
+posteo real, no solo hasta donde llegó la continuación 17.
+
+**Cuenta `6107 Servicios` corregida en el catálogo de cuentas real** (no
+solo la de prueba — cualquier factura real contra esa cuenta tenía el
+mismo problema): tenía **todos** los grupos de contabilización en blanco
+(`Gen. Bus./Prod. Posting Group`, `VAT Bus./Prod. Posting Group`). Se
+encontraron los valores correctos comparando contra otras cuentas de
+servicio ya configuradas (`Alquiler`, `Legales`, `Reparación...`, todas
+usan `NACGRDO` / `SERVGR18` / `GRDO 18` / `SERVGRAV18` — servicios
+gravados al 18%) via el mismo endpoint OData v4 legacy que ya venía
+usándose. Aplicado sobre `6107` — la línea de la factura, al recrearse,
+calculó el ITBIS solo (RD$5,000 + 18% = RD$5,900).
+
+**Segundo dato roto encontrado en el mismo intento:** el vendor de prueba
+(`PROV-000278`) tampoco tenía **`Payment Method Code`** configurado —
+mismo patrón que el `Gen. Bus. Posting Group` de la continuación 13
+(vendor creado a las carreras, le faltaban campos que BC exige recién al
+momento de postear, no de crear). Corregido asignándole `CREDITO` como
+método de pago por defecto, igual que cualquier vendor real tendría.
+
+**Con los 5 requisitos resueltos (NCF, Expense Class, VAT Posting Group,
+Payment Method, fecha de posteo dentro del rango permitido), se reexportó
+la factura de prueba por el botón real "Exportar ahora" del portal
+(`CF-001923`) y se posteó con `Microsoft.NAV.post` — `HTTP 204`,
+**primera factura real posteada de punta a punta desde este proyecto**.
+BC renombró el documento a `CFR-001992` (confirma lo ya documentado en
+continuación 12 sobre la renumeración draft→posteado) y generó un asiento
+real en `vendorLedgerEntries` (`entryNo 39234`, `externalDocumentNo
+E310000000001`, `amount -5900`).
+
+**Corrido `bc-sync-payments` manualmente right after**: `matched: 1` —
+la factura de prueba en Supabase quedó con `payment_source='bc'`,
+`bc_ledger_entry_no=39234`, visible en `/payments` con "Origen: Business
+Central". **Esto cierra el gap que quedó abierto desde la continuación
+12** ("no se confirmó un match real todavía") — ya hay un match end-to-end
+confirmado con una factura genuinamente posteada, no solo probado en
+lógica/rendimiento.
+
+**Cron de sincronización BC → Supabase, confirmado desde `crontab -l`:**
+órdenes de compra cada 15 min, recepciones cada 15 min, pagos (vendor
+ledger entries) cada 30 min, perfil de proveedores cada 6h (nunca invita
+sola).
+
+**Con esto, el ciclo completo (crear PO en BC → sync al portal →
+confirmar como proveedor → subir factura con OCR → aprobar como admin →
+exportar a BC con NCF/clasificación reales → postear en BC → sync de
+pago de vuelta al portal) está probado de punta a punta, con datos
+reales, sin ningún paso simulado.**
