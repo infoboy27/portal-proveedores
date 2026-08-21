@@ -22,13 +22,14 @@
 // conocido: "Buy-from Vendor No." -> "Buy_from_Vendor_No"), lo que decodifica
 // a "DSNNo. Comprobante Fiscal".
 //
-// El campo lo agrega la extension "Adsemble Liquid Base" (DYNASOFT SRL,
-// app id 865b688c-1073-4e6e-bfb6-27c28e3b8a4e, version 1.0.0.91 — ver
-// app.json) via una table extension sobre Purchase Header. AL solo deja
-// referenciar campos de extensiones declaradas como dependencia — sin esa
-// dependencia en app.json, el compilador reporta el mismo AL0132 aunque el
-// nombre este bien escrito, que es lo que paso en el primer intento con
-// esta correccion de nombre.
+// El campo NO lo agrega "Adsemble Liquid Base" sino "DSLocalization"
+// (DYNASOFT SRL, app id dc9f2114-cdfc-4bde-8c06-ac259a176816, v1.1.2.64 —
+// ver app.json), una dependencia transitiva de "Adsemble Liquid Base" que
+// aparecio en el log de "AL: Download Symbols". AL no propaga visibilidad
+// de dependencias transitivas — depender de A no da acceso a los objetos
+// de lo que A depende, hay que declarar la dependencia directa. Con solo
+// "Adsemble Liquid Base" declarada, el compilador seguia reportando
+// AL0132 aunque el nombre del campo ya estuviera bien escrito.
 //
 // Uso, sobre una factura ya creada por bc-export-invoice (por su id/systemId):
 //   PATCH .../purchaseInvoiceFiscals({systemId})  { "fiscalDocumentNo": "E310000000001" }

@@ -16,6 +16,12 @@
       "name": "Adsemble Liquid Base",
       "publisher": "DYNASOFT SRL",
       "version": "1.0.0.91"
+    },
+    {
+      "id": "dc9f2114-cdfc-4bde-8c06-ac259a176816",
+      "name": "DSLocalization",
+      "publisher": "DYNASOFT SRL",
+      "version": "1.1.2.64"
     }
   ],
   "screenshots": [],
