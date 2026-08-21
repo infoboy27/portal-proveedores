@@ -10,7 +10,14 @@
   "help": "",
   "url": "",
   "logo": "",
-  "dependencies": [],
+  "dependencies": [
+    {
+      "id": "865b688c-1073-4e6e-bfb6-27c28e3b8a4e",
+      "name": "Adsemble Liquid Base",
+      "publisher": "DYNASOFT SRL",
+      "version": "1.0.0.91"
+    }
+  ],
   "screenshots": [],
   "platform": "1.0.0.0",
   "application": "27.5.0.0",

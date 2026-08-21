@@ -22,6 +22,14 @@
 // conocido: "Buy-from Vendor No." -> "Buy_from_Vendor_No"), lo que decodifica
 // a "DSNNo. Comprobante Fiscal".
 //
+// El campo lo agrega la extension "Adsemble Liquid Base" (DYNASOFT SRL,
+// app id 865b688c-1073-4e6e-bfb6-27c28e3b8a4e, version 1.0.0.91 — ver
+// app.json) via una table extension sobre Purchase Header. AL solo deja
+// referenciar campos de extensiones declaradas como dependencia — sin esa
+// dependencia en app.json, el compilador reporta el mismo AL0132 aunque el
+// nombre este bien escrito, que es lo que paso en el primer intento con
+// esta correccion de nombre.
+//
 // Uso, sobre una factura ya creada por bc-export-invoice (por su id/systemId):
 //   PATCH .../purchaseInvoiceFiscals({systemId})  { "fiscalDocumentNo": "E310000000001" }
 page 58004 "Adsm Purch Inv Fiscal API"
