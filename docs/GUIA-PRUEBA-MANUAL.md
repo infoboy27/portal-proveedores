@@ -56,13 +56,16 @@ El portal no tiene botón para crear órdenes — nacen en BC, igual que hoy.
    - **Cantidad**: `1`
    - **Costo unitario directo**: el monto que quieras, ej. `5000`
 5. Guarda. Anota el número de orden (`CP-0XXXXX`).
-
-No hace falta "liberar" (release) la orden para que el portal la vea —
-con guardarla alcanza.
+6. **Libera la orden** (botón "Lanzar" / "Release", o `F9`) — obligatorio.
+   El portal ya no trae órdenes en estado Borrador (Draft) — solo las que
+   Adsemble ya liberó/aprobó internamente en BC. Mientras esté en
+   Borrador no va a aparecer para el proveedor ni para el admin, a
+   propósito.
 
 ## Parte 2 — Esperar (o no) la sincronización
 
-La orden llega sola al portal cada **15 minutos** (cron automático). Si no
+La orden llega sola al portal cada **15 minutos** (cron automático), pero
+solo después de liberada (paso 6). Si no
 quieres esperar, avísame el número de orden y la sincronizo manual en
 segundos.
 
