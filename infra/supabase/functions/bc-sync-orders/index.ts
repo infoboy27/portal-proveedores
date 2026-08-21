@@ -71,7 +71,19 @@ Deno.serve(async () => {
     let updated = 0;
     let lineCount = 0;
 
+    // Las ordenes en "Draft" en BC todavia no fueron liberadas/aprobadas
+    // internamente por Adsemble -- no deben llegar al portal, ni para el
+    // proveedor ni para el admin, hasta que BC las libere. Antes se
+    // sincronizaban igual (con badge "Borrador" en la UI, pero sin
+    // bloquear "Confirmar orden") — un proveedor podia confirmar una orden
+    // que el propio equipo de Adsemble aun no habia terminado de armar.
+    // Decision de Jonatan, 2026-08-21.
+    let skippedDrafts = 0;
     for (const order of orders) {
+      if (order.status === "Draft") {
+        skippedDrafts++;
+        continue;
+      }
       const vendorId = await resolveVendorId(db, order);
 
       const { data: existingOrder } = await db.from("purchase_orders").select("id").eq("bc_id", order.id).maybeSingle();
@@ -124,7 +136,7 @@ Deno.serve(async () => {
     }
 
     return new Response(
-      JSON.stringify({ ok: true, ordersProcessed: orders.length, created, updated, linesSynced: lineCount }),
+      JSON.stringify({ ok: true, ordersProcessed: orders.length, created, updated, linesSynced: lineCount, skippedDrafts }),
       { headers: { "Content-Type": "application/json" } },
     );
   } catch (err) {
