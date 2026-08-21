@@ -147,6 +147,15 @@ Deno.serve(async (req: Request) => {
       "custom",
     );
 
+    // NOTA: existe un segundo campo obligatorio para postear, "Expense
+    // Class Code" (misma page 58004, campo `expenseClassCode`) — clasificacion
+    // de gasto para los reportes 606/607/608 de la DGII. No se autocompleta
+    // aqui a proposito: es una decision contable de Adsemble (que codigo
+    // corresponde a que tipo de gasto/cuenta), no un dato que el portal
+    // pueda inferir del proveedor o la factura sin equivocarse. Mientras no
+    // se defina esa regla, el posteo en BC requiere completarlo a mano ahi
+    // (o decidir una regla y volver a esta funcion para automatizarlo).
+
     // 3. Adjuntar el PDF de la factura, si ya fue subido a Storage.
     let attached = false;
     if (invoice.file_path) {

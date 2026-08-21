@@ -842,3 +842,97 @@ pestaña nueva reemplaza silenciosamente la sesión de las demás pestañas
 abiertas al mismo dominio. Es comportamiento estándar de Supabase Auth, no
 un bug, pero vale la pena tenerlo presente si se prueba con varios roles a
 la vez.
+
+---
+
+## 2026-08-20 (continuación 17) — NCF automático y segundo bloqueo de posteo cerrado
+
+Jonatan pidió resolver el NCF de una vez ("eso es mandatorio y el portal
+debe leer ese campo de las facturas automaticamente") — dos pedidos en
+uno: (1) que el posteo en BC deje de fallar por falta de NCF, y (2) que
+el portal lo lea solo del archivo subido, no que el proveedor lo escriba
+a mano. El punto (2) **ya estaba resuelto** desde antes de esta sesión —
+ver más abajo. El punto (1) sí era un bloqueo real y llevó varias vueltas.
+
+**Descubrimiento que no esperaba: el OCR de NCF/fecha ya existe y
+funciona.** `extract-invoice-data` (Edge Function) + `ocr-service`
+(contenedor `adsemble-ocr-service`, Flask + pdf2image + Tesseract en
+español, corriendo hace 2 semanas) ya está cableado a `uploadInvoice` en
+`domain.ts` — 100% self-hosted, sin OpenAI/Anthropic ni ningún servicio de
+pago. Mi primera prueba de `/qa` (con un PDF sintético sin las palabras
+"NCF"/"Fecha") no encontró nada y por eso reporté mal que estaba roto.
+Reprobado con un PDF realista ("NCF: E310000000001" / "Fecha: 20/08/2026")
+subido por la UI real: **el formulario de la factura se pre-llenó solo**,
+sin escribir nada a mano. No hizo falta construir nada nuevo aquí.
+
+**El bloqueo real — posteo en BC — necesitó tres vueltas, cada una con un
+`F5` de Jonatan:**
+
+1. **NCF ("No. Comprobante Fiscal")**: no expuesto en ningún campo de la
+   API v2.0 estándar (confirmado antes, ver continuación 16). Primer
+   intento de extensión AL usó el caption visible en pantalla
+   (`"No. Comprobante Fiscal"`, encontrado por Jonatan con Ctrl+Alt+F1) —
+   falló al compilar (`AL0132`, el campo no existe con ese nombre).
+   Encontré el nombre real **sin necesitar VS Code**: BC expone sin querer
+   un endpoint OData v4 legacy (`/ODataV4/$metadata`, alcanzable con las
+   mismas credenciales de servicio) que lista docenas de "web services"
+   tipo Excel/Power BI ya publicados por DYNASOFT SRL, incluyendo varios
+   basados en Purchase Header. Ahí aparece `DSNNo_Comprobante_Fiscal` —
+   decodificando la conversión de nombres de BC a OData (calibrada contra
+   un campo conocido: `"Buy-from Vendor No."` → `"Buy_from_Vendor_No"`) da
+   el nombre AL real: **`"DSNNo. Comprobante Fiscal"`**.
+2. **Segundo intento, mismo error `AL0132` pese al nombre correcto**: el
+   campo lo agrega una extensión instalada (`DSLocalization`, DYNASOFT
+   SRL) que es una dependencia *transitiva* de `Adsemble Liquid Base`
+   (la única declarada en `app.json`) — AL no propaga visibilidad de
+   dependencias transitivas, hay que declarar la dependencia directa.
+   Encontrado en el propio log de `AL: Download Symbols` que Jonatan
+   pegó (lista "propagated dependencies"). Agregada `DSLocalization`
+   (`dc9f2114-cdfc-4bde-8c06-ac259a176816`, v1.1.2.64) a `app.json` — F5
+   compiló limpio.
+3. **Verificación real, no solo compilación**: probé escribiendo el NCF
+   vía la API nueva (`PATCH .../purchaseInvoiceFiscals`) sobre la factura
+   de prueba `CF-001921` y reintentando `Microsoft.NAV.post` — el error de
+   NCF desapareció, pero salió **un segundo campo obligatorio distinto**:
+   `"Specify Expense Class. Code for Document Type Invoice"` (clasificación
+   de gasto para los reportes 606/607/608 de la DGII). Mismo método:
+   encontrado `DSNCod_Clasificacion_Gasto` en el mismo metadata OData v4,
+   decodifica a `"DSNCod. Clasificacion Gasto"` — confirmado con datos
+   reales de órdenes de compra existentes (`Pedido_compra_Excel`, ya
+   tienen valores como `"01"`, `"02"`, `"04"`). Agregado a la misma
+   `page 58004` junto al NCF. Jonatan corrió `F5` una vez más, confirmado
+   vía API (no solo por el log de VS Code, que no distingue compilar de
+   publicar) que el campo nuevo ya respondía en el sandbox.
+
+**Con el NCF y el Expense Class Code resueltos, apareció un tercer
+bloqueo — pero este es de datos, no de código:** `"VAT Prod. Posting Group
+must have value in Purchase Line... G/L Account 6107"`. La cuenta contable
+`6107` (usada solo en la línea de prueba de `CP-000211`, un workaround de
+la continuación 13) nunca tuvo configurado un grupo de IVA en el catálogo
+de cuentas real. No es un campo faltante en la API — es una cuenta de
+prueba mal configurada. No se persiguió más porque no bloquea facturas
+reales contra cuentas ya configuradas correctamente, solo esta específica
+de prueba.
+
+**Cableado a la aplicación:** `bc-export-invoice` ahora escribe el NCF
+automáticamente (`invoice_tax_number` → `fiscalDocumentNo`) en cada
+exportación — probado en vivo por la UI real (botón "Exportar ahora", sin
+ningún curl manual): `CF-001922` salió con `fiscalDocumentNo` correcto.
+**El Expense Class Code NO se autocompleta a propósito** — es una
+clasificación contable que depende de qué tipo de gasto es cada línea,
+una decisión de Adsemble, no algo que el portal pueda inferir sin
+arriesgarse a reportar mal a la DGII. Queda documentado en el código
+(`bc-export-invoice/index.ts`) como pendiente de una regla antes de
+automatizarlo.
+
+**Efecto secundario bueno:** `app.json` nunca había subido de versión
+(`1.0.0.0` desde el primer publish) — no había forma de distinguir en
+Extension Management si un build nuevo realmente había llegado al
+sandbox. Subida a `1.1.0.0` en este cambio; buena práctica mantenerla
+subiendo en cada publish futuro.
+
+**Con esto: el NCF ya no bloquea el posteo, automatizado de punta a
+punta. El Expense Class Code también tiene el camino de API resuelto,
+pendiente solo de una regla de negocio. El único bloqueo real que queda
+para posteo 100% automático es de datos maestros (VAT Posting Group en
+cuentas), no de código ni de integración.**
