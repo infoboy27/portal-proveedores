@@ -31,8 +31,18 @@
 // "Adsemble Liquid Base" declarada, el compilador seguia reportando
 // AL0132 aunque el nombre del campo ya estuviera bien escrito.
 //
+// Segundo campo obligatorio encontrado al intentar postear ya con el NCF
+// puesto: "Specify Expense Class. Code for Document Type Invoice" — la
+// clasificacion de gasto que la DGII pide en los reportes 606/607/608
+// (codigos de 2 digitos: "01", "02", "04", ... — confirmado con datos
+// reales de ordenes de compra existentes via Pedido_compra_Excel). Mismo
+// origen (DSLocalization) y mismo metodo de decodificacion: se encontro
+// "DSNCod_Clasificacion_Gasto" en el metadata OData v4, que decodifica a
+// "DSNCod. Clasificacion Gasto".
+//
 // Uso, sobre una factura ya creada por bc-export-invoice (por su id/systemId):
-//   PATCH .../purchaseInvoiceFiscals({systemId})  { "fiscalDocumentNo": "E310000000001" }
+//   PATCH .../purchaseInvoiceFiscals({systemId})
+//     { "fiscalDocumentNo": "E310000000001", "expenseClassCode": "04" }
 page 58004 "Adsm Purch Inv Fiscal API"
 {
     PageType = API;
@@ -58,6 +68,7 @@ page 58004 "Adsm Purch Inv Fiscal API"
                 field(id; Rec.SystemId) { Caption = 'Id'; Editable = false; }
                 field(number; Rec."No.") { Caption = 'Number'; Editable = false; }
                 field(fiscalDocumentNo; Rec."DSNNo. Comprobante Fiscal") { Caption = 'Fiscal Document No.'; }
+                field(expenseClassCode; Rec."DSNCod. Clasificacion Gasto") { Caption = 'Expense Class Code'; }
             }
         }
     }
