@@ -10,11 +10,17 @@
 // vendorInvoiceNumber al crear la factura) — falta escribirlo aqui antes
 // de intentar postear.
 //
-// Nombre del campo tomado del caption visible en BC ("No. Comprobante
-// Fiscal", ubicado por Jonatan con Ctrl+Alt+F1 sobre el campo real en una
-// factura de compra). Si el nombre interno AL no coincide exactamente con
-// el caption, la publicacion (F5) va a fallar con un error de compilacion
-// mostrando el nombre correcto — en ese caso, avisar para corregir.
+// Nombre real del campo: "DSNNo. Comprobante Fiscal" (no "No. Comprobante
+// Fiscal" — primer intento fallo con AL0132, "does not contain a
+// definition"). El prefijo "DSN" es de DYNASOFT SRL, el mismo publisher
+// de "Adsemble Liquid Base" ya instalado en este tenant (ver docs/BITACORA.md
+// continuacion 10). Confirmado sin VS Code: se descargo el $metadata
+// completo de los web services OData v4 legacy (`/ODataV4/$metadata`,
+// alcanzable con las mismas credenciales de servicio) y se encontro
+// "DSNNo_Comprobante_Fiscal" ahi -- la codificacion de nombres OData de BC
+// convierte "-"/" " en "_" y elimina "." (calibrado contra un campo
+// conocido: "Buy-from Vendor No." -> "Buy_from_Vendor_No"), lo que decodifica
+// a "DSNNo. Comprobante Fiscal".
 //
 // Uso, sobre una factura ya creada por bc-export-invoice (por su id/systemId):
 //   PATCH .../purchaseInvoiceFiscals({systemId})  { "fiscalDocumentNo": "E310000000001" }
@@ -42,7 +48,7 @@ page 58004 "Adsm Purch Inv Fiscal API"
             {
                 field(id; Rec.SystemId) { Caption = 'Id'; Editable = false; }
                 field(number; Rec."No.") { Caption = 'Number'; Editable = false; }
-                field(fiscalDocumentNo; Rec."No. Comprobante Fiscal") { Caption = 'Fiscal Document No.'; }
+                field(fiscalDocumentNo; Rec."DSNNo. Comprobante Fiscal") { Caption = 'Fiscal Document No.'; }
             }
         }
     }
