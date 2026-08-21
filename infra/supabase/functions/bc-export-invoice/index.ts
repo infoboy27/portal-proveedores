@@ -6,7 +6,7 @@
 // asi que replicamos ese comportamiento copiando purchaseOrderLines ->
 // purchaseInvoiceLines a mano.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { bcPost, bcAttachFile } from "../_shared/bc-client.ts";
+import { bcPost, bcPatch, bcAttachFile } from "../_shared/bc-client.ts";
 
 interface ExportRequest {
   invoiceId: string;
@@ -127,6 +127,25 @@ Deno.serve(async (req: Request) => {
         `La orden tiene ${lines?.length} linea(s) pero ninguna tiene un numero de cuenta/item valido en Business Central (bc_line_object_number vacio) — la factura ${created.number} se creo en BC pero sin lineas, hay que corregirla o eliminarla ahi manualmente`,
       );
     }
+
+    // 2.5. "No. Comprobante Fiscal" (NCF) — campo obligatorio de cumplimiento
+    // fiscal de Republica Dominicana para poder postear. No esta expuesto en
+    // la API estandar (confirmado inspeccionando el $metadata completo de
+    // purchaseInvoices, 46 campos, ninguno fiscal) asi que se escribe via el
+    // Custom API propio (PurchInvoiceFiscalAPI.al, page 58004), sobre el
+    // mismo SystemId que ya devolvio la creacion estandar del paso 1. Sin
+    // esto, Microsoft.NAV.post rechaza el posteo con "Fiscal Document No.
+    // must have a value" — confirmado en vivo en /qa 2026-08-20.
+    if (!invoice.invoice_tax_number) {
+      throw new Error(
+        `La factura ${created.number} se creo en BC pero no tiene NCF (invoice_tax_number) — Business Central no la va a dejar postear sin ese dato`,
+      );
+    }
+    await bcPatch(
+      `/purchaseInvoiceFiscals(${created.id})`,
+      { fiscalDocumentNo: invoice.invoice_tax_number },
+      "custom",
+    );
 
     // 3. Adjuntar el PDF de la factura, si ya fue subido a Storage.
     let attached = false;

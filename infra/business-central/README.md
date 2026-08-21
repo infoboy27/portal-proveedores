@@ -11,6 +11,8 @@ export de facturas siguen usando la API estándar sin cambios).
 |---|---|
 | `src/PurchReceiptsAPI.al` | `purchaseReceipts` / `purchaseReceiptLines` — recepciones publicadas contra una orden de compra |
 | `src/VendorLedgerEntriesAPI.al` | `vendorLedgerEntries` — movimientos de cuentas por pagar (pagos, saldo) |
+| `src/VendorPostingSetupAPI.al` | `vendorPostingSetups` — Gen. Bus./Vendor Posting Group, obligatorios para crear ordenes/facturas y no expuestos por la API estandar |
+| `src/PurchInvoiceFiscalAPI.al` | `purchaseInvoiceFiscals` — "No. Comprobante Fiscal" (NCF) en facturas de compra sin publicar, obligatorio para postear y tampoco expuesto por la API estandar |
 
 ## Ya está instalado y preconfigurado (2026-08-20)
 
@@ -66,6 +68,16 @@ hacerlo la persona dueña de esa cuenta.
   Symbols` + el explorador de objetos de VS Code lo confirma en segundos.
 - **Probar primero en `Test672026`**, nunca directo en `Production` — es
   el mismo sandbox que ya validó el resto de la integración.
+- **`PurchInvoiceFiscalAPI.al` es el que más riesgo tiene de fallar al
+  compilar.** El campo `"No. Comprobante Fiscal"` no es de la app base de
+  BC — lo agrega una extensión de cumplimiento fiscal dominicano ya
+  instalada en el tenant, y el nombre se tomó del caption visible en
+  pantalla (confirmado por Jonatan con Ctrl+Alt+F1), no de los símbolos.
+  Si el nombre interno real es distinto, `F5` va a fallar con un error de
+  compilación tipo "The field 'No. Comprobante Fiscal' does not exist in
+  Purchase Header" — en ese caso, el explorador de objetos de VS Code
+  (`AL: Open Symbols` → tabla `Purchase Header`) sí va a mostrar el nombre
+  correcto para corregirlo.
 - Una vez confirmado que responde bien en el sandbox, recién ahí publicar
   a `Production` siguiendo el mismo proceso.
 

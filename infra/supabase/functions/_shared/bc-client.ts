@@ -102,14 +102,29 @@ export async function bcGetAll<T>(path: string, api: BcApi = "standard"): Promis
   return results;
 }
 
-export async function bcPost<T>(path: string, body: unknown): Promise<T> {
-  const res = await bcFetch(companyPath(path), "standard", {
+export async function bcPost<T>(path: string, body: unknown, api: BcApi = "standard"): Promise<T> {
+  const res = await bcFetch(companyPath(path), api, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
     throw new Error(`BC POST ${path} -> HTTP ${res.status} ${await res.text()}`);
+  }
+  return (await res.json()) as T;
+}
+
+// If-Match: "*" evita tener que leer el @odata.etag actual antes de escribir
+// (mismo truco que ya usa bcAttachFile) — aceptable aqui porque nunca hay
+// escrituras concurrentes sobre la misma factura recien creada.
+export async function bcPatch<T>(path: string, body: unknown, api: BcApi = "standard"): Promise<T> {
+  const res = await bcFetch(companyPath(path), api, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", "If-Match": "*" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`BC PATCH ${path} -> HTTP ${res.status} ${await res.text()}`);
   }
   return (await res.json()) as T;
 }
