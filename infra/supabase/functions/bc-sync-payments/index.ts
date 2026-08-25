@@ -21,6 +21,9 @@
 // cerrado (Open = false).
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { bcGetAll } from "../_shared/bc-client.ts";
+import { markRan, shouldRun } from "../_shared/sync-throttle.ts";
+
+const THROTTLE_KEY = "sync_payments_interval_minutes";
 
 interface BcVendorLedgerEntry {
   entryNo: number;
@@ -70,6 +73,12 @@ function findInvoice(
 Deno.serve(async () => {
   try {
     const db = admin();
+
+    if (!(await shouldRun(db, THROTTLE_KEY))) {
+      return new Response(JSON.stringify({ ok: true, skipped: true, reason: "not due yet" }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
     // Un solo GET a BC (paginado, filtrado server-side a solo tipo Factura)
     // y una sola query a Supabase — evita el patron N+1 (una consulta por
@@ -140,6 +149,8 @@ Deno.serve(async () => {
         dueDateUpdated++;
       }
     }
+
+    await markRan(db, THROTTLE_KEY);
 
     return new Response(
       JSON.stringify({ ok: true, entriesProcessed: entries.length, matched, markedPaid, dueDateUpdated, skippedNoMatch }),

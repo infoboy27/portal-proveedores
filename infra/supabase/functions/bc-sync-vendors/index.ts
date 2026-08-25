@@ -19,8 +19,10 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { bcGetAll } from "../_shared/bc-client.ts";
 import { provisionInvitedUser } from "../_shared/provision-user.ts";
+import { markRan, shouldRun } from "../_shared/sync-throttle.ts";
 
 const MAX_INVITES_PER_RUN = 10;
+const THROTTLE_KEY = "sync_vendors_interval_minutes";
 
 interface BcVendor {
   number: string;
@@ -58,6 +60,13 @@ Deno.serve(async (req: Request) => {
 
   try {
     const db = admin();
+
+    if (!(await shouldRun(db, THROTTLE_KEY))) {
+      return new Response(JSON.stringify({ ok: true, skipped: true, reason: "not due yet" }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     const companyId = await resolveCompanyId(db);
     const vendors = await bcGetAll<BcVendor>("/vendors");
 
@@ -129,6 +138,8 @@ Deno.serve(async (req: Request) => {
         }
       }
     }
+
+    await markRan(db, THROTTLE_KEY);
 
     return new Response(
       JSON.stringify({

@@ -6,6 +6,9 @@
 // frontend directamente.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { bcGetAll } from "../_shared/bc-client.ts";
+import { markRan, shouldRun } from "../_shared/sync-throttle.ts";
+
+const THROTTLE_KEY = "sync_receipts_interval_minutes";
 
 interface BcPurchaseReceipt {
   id: string;
@@ -32,6 +35,13 @@ async function resolveCompanyId(db: ReturnType<typeof admin>): Promise<string> {
 Deno.serve(async () => {
   try {
     const db = admin();
+
+    if (!(await shouldRun(db, THROTTLE_KEY))) {
+      return new Response(JSON.stringify({ ok: true, skipped: true, reason: "not due yet" }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     const companyId = await resolveCompanyId(db);
     const receipts = await bcGetAll<BcPurchaseReceipt>("/purchaseReceipts", "custom");
 
@@ -79,6 +89,8 @@ Deno.serve(async () => {
         created++;
       }
     }
+
+    await markRan(db, THROTTLE_KEY);
 
     return new Response(
       JSON.stringify({ ok: true, receiptsProcessed: receipts.length, created, updated, skippedNoOrder }),

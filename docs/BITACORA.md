@@ -991,3 +991,67 @@ confirmar como proveedor → subir factura con OCR → aprobar como admin →
 exportar a BC con NCF/clasificación reales → postear en BC → sync de
 pago de vuelta al portal) está probado de punta a punta, con datos
 reales, sin ningún paso simulado.**
+
+## 2026-08-24 (continuación 19) — Reset de password real y sync parametrizable, para la demo con Adsemble
+
+Jonatan presenta avances en vivo al equipo de Adsemble mañana
+(2026-08-25) y pidió confirmar tres cosas antes: que el superadmin pueda
+crear usuarios/asignar roles/resetear passwords desde el panel (no a
+mano), que los correos salgan bien, y que los intervalos de sync sean
+parametrizables. Revisando el código encontré dos gaps reales: no había
+botón de reset de password en `Users.tsx` (se hizo manual por script la
+semana pasada, ver continuación 18 implícita del incidente de login), y
+los intervalos de sync estaban fijos como entradas de `crontab`, sin
+ningún camino de configuración. Aprovechamos también para aclarar que
+todo lo probado hasta ahora es contra el sandbox `Test672026`, no
+producción real de BC — decisión explícita de Jonatan mantenerlo así
+para la demo.
+
+**Reset de password real (`reset-user-password` Edge Function, nueva)**:
+sigue el mismo patrón que `invite-user`/`delete-user` — valida
+server-side que quien llama es `admin`/`superadmin` (nunca confía en el
+cliente), busca el email real del usuario objetivo por `userId`, y llama
+`auth.resetPasswordForEmail()` (no `admin.generateLink`, que solo
+devuelve el link sin mandar el correo) — dispara el correo real vía SMTP
+con la plantilla `recovery.html` ya de marca Adsemble, la misma que se
+usó para el reset manual de Jonatan. Registra `password_reset_requested`
+en `security_audit_log`. Botón nuevo "Resetear password" en
+`Users.tsx`, junto a Editar — gateado a `admin`/`superadmin` igual que
+Editar, con modal de confirmación que muestra a qué correo se mandó.
+
+**Intervalos de sync parametrizables (`schema-v10.sql`)**: tabla nueva
+`system_settings` (key, value_minutes, last_run_at) con los 4 valores
+actuales como default (15/15/30/360 — ningún cambio de comportamiento al
+desplegar). RPC `rpc_update_sync_interval(p_key, p_minutes)`,
+`security definer`, exclusivo de superadmin — a diferencia de
+`rpc_update_user_profile` (que confía en un `p_changed_by` mandado por
+el cliente), usa `auth.uid()` directo, más seguro. Límite 5–1440
+minutos. Registra `sync_interval_changed` en `security_audit_log`.
+
+El piso real de granularidad sigue siendo el tick del sistema operativo,
+no la tabla — así que el crontab del servidor se ajustó de
+`*/15`/`*/15`/`*/30`/`0 */6` (uno por job) a un tick uniforme `*/5` en
+los 4 jobs del portal (backup de Medisoft y uptime-check de DóndeTa en
+el mismo crontab, sin tocar). Cada Edge Function de sync
+(`bc-sync-orders`, `bc-sync-receipts`, `bc-sync-payments`,
+`bc-sync-vendors`) ahora llama `shouldRun()`/`markRan()`
+(`_shared/sync-throttle.ts`) al entrar/salir — si no le toca según
+`system_settings`, responde `{ok:true, skipped:true}` sin tocar BC.
+Verificado en vivo contra producción: primera llamada a `bc-sync-orders`
+corrió y actualizó `last_run_at`; la segunda, inmediatamente después,
+respondió `skipped:true` — confirma el throttle funcionando de punta a
+punta antes de la demo. Nuevo panel "Intervalos de sincronización con
+Business Central" en `Security.tsx` (superadmin), con la última corrida
+de cada job y un campo editable en minutos.
+
+**Desplegado a producción**: migración aplicada (`docker exec
+supabase-db psql`), `rest` y `functions` reiniciados, frontend
+reconstruido (`docker compose build app` + `up -d`), crontab
+reinstalado con backup automático (`~/.cache/crontab/crontab.bak`).
+`npm run build` (tsc + vite) limpio antes de desplegar.
+
+**Pendiente de que Jonatan confirme en vivo mañana**: el flujo de reset
+de password nunca se probó de punta a punta por la UI real (solo se
+verificó que la función responde y rechaza tokens inválidos) — falta
+clickearlo una vez con un usuario de prueba antes de mostrarlo al
+equipo de Adsemble.

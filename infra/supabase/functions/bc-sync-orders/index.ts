@@ -2,6 +2,9 @@
 // Invocacion manual/programada — no la llama el frontend. Ver plan Fase A.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { bcGetAll } from "../_shared/bc-client.ts";
+import { markRan, shouldRun } from "../_shared/sync-throttle.ts";
+
+const THROTTLE_KEY = "sync_orders_interval_minutes";
 
 interface BcPurchaseOrder {
   id: string;
@@ -64,6 +67,13 @@ async function resolveVendorId(db: ReturnType<typeof admin>, order: BcPurchaseOr
 Deno.serve(async () => {
   try {
     const db = admin();
+
+    if (!(await shouldRun(db, THROTTLE_KEY))) {
+      return new Response(JSON.stringify({ ok: true, skipped: true, reason: "not due yet" }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     const companyId = await resolveCompanyId(db);
     const orders = await bcGetAll<BcPurchaseOrder>("/purchaseOrders");
 
@@ -134,6 +144,8 @@ Deno.serve(async () => {
         lineCount += lineRows.length;
       }
     }
+
+    await markRan(db, THROTTLE_KEY);
 
     return new Response(
       JSON.stringify({ ok: true, ordersProcessed: orders.length, created, updated, linesSynced: lineCount, skippedDrafts }),
