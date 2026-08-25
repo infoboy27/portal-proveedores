@@ -231,6 +231,7 @@ export function InvoiceDetail() {
   const updateInvoiceData = useDomainStore((s) => s.updateInvoiceData);
   const setInvoicePaymentDueDate = useDomainStore((s) => s.setInvoicePaymentDueDate);
   const markInvoicePaid = useDomainStore((s) => s.markInvoicePaid);
+  const downloadInvoiceFile = useDomainStore((s) => s.downloadInvoiceFile);
 
   const [rejectReason, setRejectReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -245,6 +246,8 @@ export function InvoiceDetail() {
   const [invoiceTaxNumberInput, setInvoiceTaxNumberInput] = useState("");
   const [invoiceTotalInput, setInvoiceTotalInput] = useState("");
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const invoice = invoices.find((inv) => inv.id === invoiceId);
   const order = purchaseOrders.find((po) => po.id === invoice?.purchaseOrderId);
@@ -329,6 +332,19 @@ export function InvoiceDetail() {
       setBusy(false);
     }
   }
+  async function handleDownload() {
+    if (!invoice?.filePath) return;
+    setDownloadError(null);
+    setDownloading(true);
+    try {
+      const url = await downloadInvoiceFile(invoice.filePath);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : "No fue posible descargar el archivo.");
+    } finally {
+      setDownloading(false);
+    }
+  }
   async function handleSavePaymentDueDate() {
     setSavingPaymentDueDate(true);
     try {
@@ -357,10 +373,18 @@ export function InvoiceDetail() {
           <p className="text-xs uppercase tracking-[0.22em] text-slate-500">{t("invoices")}</p>
           <h1 className="text-2xl font-semibold text-slate-950">{invoice.invoiceNumber || invoice.id.slice(0, 8)}</h1>
         </div>
-        <Link to="/invoices">
-          <Button variant="ghost">{t("backToOrders")}</Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          {invoice.filePath && (
+            <Button variant="ghost" onClick={handleDownload} disabled={downloading}>
+              {downloading ? "..." : "Descargar PDF"}
+            </Button>
+          )}
+          <Link to="/invoices">
+            <Button variant="ghost">{t("backToOrders")}</Button>
+          </Link>
+        </div>
       </div>
+      {downloadError && <p className="text-sm text-rose-600">{downloadError}</p>}
 
       <Card className="p-5">
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

@@ -128,6 +128,9 @@ interface DomainStore {
   // via SMTP, plantilla recovery.html) -- reemplaza el reset manual por
   // script que se hacia antes de esto.
   resetUserPassword: (userId: string) => Promise<{ email: string }>;
+  // URL firmada temporal (60s) para descargar el PDF de una factura ya
+  // subida -- el bucket "invoices" es privado, no hay URL publica directa.
+  downloadInvoiceFile: (filePath: string) => Promise<string>;
   // Onboarding real (2026-08-20): invita un login nuevo de verdad, via la
   // Edge Function invite-user (Admin API + user_profiles + user_vendor_mapping
   // en una sola llamada). Reemplaza el placeholder anterior donde "Crear
@@ -432,5 +435,12 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     if (error) throw error;
     if (!data?.ok) throw new Error(data?.error ?? "No se pudo enviar el correo de reset");
     return { email: data.email as string };
+  },
+
+  async downloadInvoiceFile(filePath) {
+    const { data, error } = await supabase.storage.from("invoices").createSignedUrl(filePath, 60);
+    if (error) throw error;
+    if (!data?.signedUrl) throw new Error("No se pudo generar el enlace de descarga");
+    return data.signedUrl;
   },
 }));
