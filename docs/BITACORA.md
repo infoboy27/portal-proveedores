@@ -1171,3 +1171,57 @@ real:
 no requiere reiniciar `rest` ni `functions` (la API de Storage evalúa
 RLS por consulta, no cachea políticas). Frontend reconstruido
 (`docker compose build app && up -d`) para el botón de descarga.
+
+## 2026-08-25 (continuación 2) — Mensaje de éxito/error al subir + no duplicar factura por NCF
+
+**Mensaje de éxito/error al subir** (`Invoices.tsx`): antes `handleFile`
+no tenía `catch` — si `uploadInvoice` fallaba, la excepción quedaba sin
+capturar (sin mensaje visible) y si funcionaba, la única señal era la
+redirección silenciosa a `/invoices/:id`. Ahora: mensaje rojo junto al
+botón "Subir factura" si falla, y un banner verde "Factura subida
+correctamente" en el detalle vía `?uploaded=1` (se limpia de la URL al
+leerlo, para que un refresh no lo repita).
+
+**No duplicar factura por NCF** (pedido de Jonatan): el NCF (Número de
+Comprobante Fiscal) es el identificador fiscal real ante la DGII —
+único por proveedor, a diferencia de `invoice_number` que cada
+proveedor arma como quiera. Mismo patrón de dos capas que
+`schema-v5.sql` ya usó para `invoice_number`:
+- `schema-v12.sql`: índice único `invoices_vendor_ncf_uq` en
+  `(vendor_id, invoice_tax_number)`, ignorando filas con NCF vacío
+  (sigue habiendo muchas mientras la factura es borrador y el OCR/el
+  proveedor todavía no lo completó).
+- `domain.ts:updateInvoiceData`: mismo chequeo explícito que ya existía
+  para `invoice_number` (bloquea con mensaje claro antes de intentar
+  guardar), ahora también por `invoice_tax_number`. Se dispara al
+  confirmar la factura (`handleConfirm` en `Invoices.tsx`), que es
+  donde ya se validaba el duplicado por número — no al momento de subir
+  el PDF, porque el NCF todavía no se conoce en ese instante (lo llena
+  el OCR después, o el proveedor a mano).
+
+**Bloqueante encontrado al aplicar el índice**: ya existían 5 facturas
+duplicadas en producción — 3 subidas ese mismo día por Jonatan
+probando el botón de descarga con el mismo PDF
+(`Factura_Adsemble_RD1180_NCF.pdf`, NCF `B0100000001`, las 3 en estado
+`uploaded` sin confirmar) y 2 fixtures viejos de QA (NCF
+`E310000000001`, uno `processed` y otro `uploaded`). Se le preguntó a
+Jonatan si limpiar los sobrantes — confirmó que sí. Se borraron las 2
+copias repetidas de hoy y el borrador QA sin confirmar, dejando un solo
+registro por NCF (ninguno de los borrados estaba aprobado ni
+exportado; `invoice_lines`/`invoice_status_history` tienen `on delete
+cascade`, no quedaron huérfanos).
+
+**Verificado en vivo contra producción** (no solo revisión de código):
+tras crear el índice, un `INSERT` directo con el mismo `(vendor_id,
+invoice_tax_number)` fue rechazado por Postgres
+(`duplicate key value violates unique constraint
+"invoices_vendor_ncf_uq"`); dos `INSERT` con NCF vacío para el mismo
+proveedor sí se permitieron (confirma que los borradores sin NCF
+siguen funcionando igual que antes). El mensaje amigable en la app
+(`updateInvoiceData`) no se probó por la UI real — es exactamente el
+mismo patrón ya usado y probado para `invoice_number`, solo con el
+nombre de campo y el mensaje cambiados, pero falta el click real antes
+de darlo por completamente confirmado.
+
+**Desplegado**: `schema-v12.sql` aplicado con `docker exec supabase-db
+psql`; frontend reconstruido (`docker compose build app && up -d`).

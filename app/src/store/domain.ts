@@ -286,6 +286,27 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
       }
     }
 
+    // Duplicado por NCF (2026-08-25, pedido de Jonatan): el NCF es el
+    // identificador fiscal real y unico ante la DGII -- a diferencia de
+    // invoice_number (que cada proveedor arma como quiera), asi que es un
+    // filtro mas confiable para evitar que se suba/confirme la misma
+    // factura dos veces. Mismo patron que el chequeo de arriba: indice
+    // unico de respaldo en schema-v12.sql.
+    const invoiceTaxNumber = patch.invoiceTaxNumber.trim();
+    if (invoiceTaxNumber && current.supplierId) {
+      const { data: duplicateNcf, error: dupNcfError } = await supabase
+        .from("invoices")
+        .select("id")
+        .eq("vendor_id", current.supplierId)
+        .eq("invoice_tax_number", invoiceTaxNumber)
+        .neq("id", invoiceId)
+        .maybeSingle();
+      if (dupNcfError) throw dupNcfError;
+      if (duplicateNcf) {
+        throw new Error(`Ya existe una factura con el NCF "${invoiceTaxNumber}" para este proveedor.`);
+      }
+    }
+
     // Monto: si la factura esta vinculada a una orden de compra, el total
     // no puede superar el monto de esa orden.
     if (current.purchaseOrderId) {
@@ -302,7 +323,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
       .update({
         invoice_number: invoiceNumber,
         invoice_date: patch.invoiceDate,
-        invoice_tax_number: patch.invoiceTaxNumber,
+        invoice_tax_number: invoiceTaxNumber,
         total_amount: patch.totalAmount,
       })
       .eq("id", invoiceId);
