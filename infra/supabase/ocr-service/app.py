@@ -17,13 +17,30 @@ NCF_LABEL_PATTERN = re.compile(r"(?:NCF|Comprobante\s+Fiscal)[^\n]{0,40}?([A-Z]\
 DATE_LABEL_PATTERN = re.compile(r"Fecha[^\n]{0,20}?(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})", re.IGNORECASE)
 DATE_PATTERN = re.compile(r"\b(\d{1,2})[/\-](\d{1,2})[/\-](\d{2,4})\b")
 
+# Fecha escrita en letras (ej. "25 de agosto de 2026") -- comun en facturas
+# generadas por sistemas que no usan formato numerico. Encontrado 2026-08-25:
+# una factura real con este formato no extraia fecha en absoluto.
+SPANISH_MONTHS = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
+    "noviembre": 11, "diciembre": 12,
+}
+SPANISH_DATE_PATTERN = re.compile(r"\b(\d{1,2})\s+de\s+([a-záéíóúñ]+)\s+de\s+(\d{4})\b", re.IGNORECASE)
+
 # Numero de factura del proveedor (distinto del NCF): a diferencia del NCF no
 # tiene un formato fijo entre proveedores, asi que SOLO se acepta si viene
 # etiquetado explicitamente -- sin fallback "a ciegas" como en NCF, para no
 # capturar basura y pisar lo que el proveedor ya escribio a mano.
+#
+# El lookahead "que contenga al menos un digito" es a proposito (encontrado
+# 2026-08-25): en documentos donde "FACTURA" (titulo) y "NO. DE FACTURA"
+# (etiqueta real) van en lineas separadas, el patron anterior saltaba desde
+# el titulo hasta el "No." de la etiqueta de abajo y capturaba la palabra
+# "DE" (de "NO. DE FACTURA") como si fuera el numero -- sin digitos, "DE"
+# nunca deberia calificar como numero de factura.
 INVOICE_NUMBER_LABEL_PATTERN = re.compile(
     r"(?:Factura\s*(?:No\.?|N[uú]m(?:ero)?\.?|#)|No\.?\s*(?:de\s*)?Factura|N[uú]mero\s+de\s+Factura)"
-    r"\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-\/]{1,19})",
+    r"\s*[:\-]?\s*((?=[A-Z0-9\-\/]*\d)[A-Z0-9][A-Z0-9\-\/]{1,19})",
     re.IGNORECASE,
 )
 
@@ -86,6 +103,14 @@ def extract_date(text: str) -> str | None:
         normalized = _normalize_date(*match.groups())
         if normalized:
             return normalized
+    spanish = SPANISH_DATE_PATTERN.search(text)
+    if spanish:
+        day, month_name, year = spanish.groups()
+        month = SPANISH_MONTHS.get(month_name.lower())
+        if month:
+            normalized = _normalize_date(day, str(month), year)
+            if normalized:
+                return normalized
     return None
 
 
