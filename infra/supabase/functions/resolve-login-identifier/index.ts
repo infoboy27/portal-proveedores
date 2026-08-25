@@ -40,6 +40,11 @@ Deno.serve(async (req: Request) => {
 
   // RNC/cedula: normaliza quitando guiones/espacios, busca el vendor por
   // ese numero, y el usuario proveedor primario mapeado a ese vendor.
+  //
+  // Se compara contra tax_registration_number_digits (columna generada,
+  // schema-v13.sql) y no contra tax_registration_number crudo -- BC guarda
+  // el RNC con guiones (ej. "131-00000-1"), asi que comparar el numero ya
+  // normalizado contra el texto crudo casi nunca calzaba.
   const normalized = identifier.replace(/[^0-9]/g, "");
   if (!normalized) {
     return new Response(JSON.stringify(GENERIC_NOT_FOUND), { headers: { "Content-Type": "application/json" } });
@@ -49,7 +54,7 @@ Deno.serve(async (req: Request) => {
   const { data: vendor } = await db
     .from("vendors")
     .select("id")
-    .eq("tax_registration_number", normalized)
+    .eq("tax_registration_number_digits", normalized)
     .maybeSingle();
   if (!vendor) {
     return new Response(JSON.stringify(GENERIC_NOT_FOUND), { headers: { "Content-Type": "application/json" } });
