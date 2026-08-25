@@ -120,9 +120,15 @@ export function InvoicesList() {
         </div>
         {canUpload && (
           <div className="flex flex-col items-end gap-2">
-            <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+              {uploading && (
+                <div className="flex items-center gap-2 text-sm font-semibold text-cyan-700" role="status" aria-live="polite">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-cyan-200 border-t-cyan-700" />
+                  Subiendo factura...
+                </div>
+              )}
               <Button onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-                {uploading ? "Subiendo..." : t("uploadInvoice")}
+                {t("uploadInvoice")}
               </Button>
               <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={handleFile} />
             </div>
