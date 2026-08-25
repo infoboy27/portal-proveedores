@@ -1106,3 +1106,68 @@ confirmó que no inventó nada, se quedó `null` como se espera.
 **Desplegado**: `docker compose build ocr-service && up -d` +
 `docker compose restart functions`, ambos en
 `/home/ubuntu/adsemble/supabase/`.
+
+## 2026-08-25 (continuación) — Botón de descarga de factura + hallazgo de RLS en Storage
+
+**Contexto:** Jonatan pidió un botón para descargar el PDF ya subido.
+Se agregó `downloadInvoiceFile()` al store (URL firmada de 60s vía
+`supabase.storage...createSignedUrl`, el bucket "invoices" es privado)
+y un botón "Descargar PDF" en el header de `InvoiceDetail` —
+justo donde ya se navega después de subir (`window.location.href =
+/invoices/:id` en `handleFile`).
+
+**Hallazgo al construirlo, no introducido por este cambio**: la única
+política de `storage.objects` para el bucket `invoices` era
+`"authenticated all invoices bucket"` (ALL, sin condición más allá de
+`bucket_id = 'invoices'`) — cualquier usuario autenticado podía
+leer/escribir el PDF de **cualquier** factura de **cualquier**
+proveedor, a diferencia de la tabla `invoices` que sí estaba bien
+acotada (`scoped read`/`scoped update`, por rol + vendor_id/company_id).
+Se le preguntó a Jonatan si corregirlo ahora o después de la demo —
+eligió ahora.
+
+**`schema-v11.sql`**: reemplaza esa única política ALL por dos, en el
+mismo espíritu que ya usa la tabla `invoices`:
+- `insert own company invoices bucket` (INSERT) — el archivo se sube
+  ANTES de que exista la fila en `invoices` (`uploadInvoice` en
+  `domain.ts`: primero storage, después el insert), así que no se
+  puede validar contra la fila todavía. Se valida en cambio contra el
+  prefijo de carpeta del path (`${companyId}/...`, que `uploadInvoice`
+  ya arma así) comparado con `portal_company_id()`.
+- `scoped read invoices bucket` (SELECT) — hace `exists` contra
+  `invoices.file_path = storage.objects.name` y aplica el mismo
+  criterio de `portal_role()`/`portal_vendor_ids()`/`portal_company_id()`
+  que ya usa la tabla. Rige también sobre `createSignedUrl` (la API de
+  Storage evalúa esta misma política antes de firmar).
+- UPDATE/DELETE se dejaron **sin política a propósito** — el frontend
+  nunca los usa en este bucket, así que quedan denegados por default
+  en vez de heredar alcance sin necesidad real.
+
+**Riesgo detectado antes de aplicar, corregido en la misma migración**:
+dos cuentas en `user_profiles` tenían `company_id` NULL — la cuenta QA
+(`jonathanmaria+qa2026@gmail.com`) y, más grave, **un admin real de
+Adsemble** (`c.cuevas@adsemble.do`). Con la política de INSERT nueva,
+esa cuenta no habría podido subir facturas nunca más (el prefijo de
+carpeta nunca iguala a `portal_company_id()` si este es NULL). Como
+hoy solo existe una empresa en el sistema (`companies` tiene una sola
+fila, Adsemble), se hizo backfill de `company_id` para ambas cuentas
+antes de crear las políticas nuevas — sin ambigüedad posible sobre a
+cuál empresa asignarlas.
+
+**Verificado en vivo contra producción, simulando RLS real** (no solo
+revisión de código): usando `set local role authenticated; set local
+"request.jwt.claim.sub" = '<uuid>'` dentro de una transacción con
+rollback, se confirmaron los 4 casos límite contra `storage.objects`
+real:
+1. El proveedor dueño de una factura SÍ ve su propio archivo.
+2. Un proveedor distinto (otro `vendor_id`) NO lo ve — el hueco quedó
+   cerrado.
+3. Superadmin SÍ ve cualquier archivo (acceso global preservado).
+4. `c.cuevas@adsemble.do` ya resuelve `portal_company_id()` a la
+   empresa Adsemble después del backfill — su flujo de subida sigue
+   funcionando.
+
+**Desplegado**: migración aplicada con `docker exec supabase-db psql`;
+no requiere reiniciar `rest` ni `functions` (la API de Storage evalúa
+RLS por consulta, no cachea políticas). Frontend reconstruido
+(`docker compose build app && up -d`) para el botón de descarga.
