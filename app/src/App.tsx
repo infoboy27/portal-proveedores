@@ -18,7 +18,7 @@ function AuthBootstrap({ children }: { children: React.ReactNode }) {
     async function loadProfile(userId: string) {
       const { data: profile } = await supabase
         .from("user_profiles")
-        .select("id, username, email, role")
+        .select("id, username, email, role, company_id")
         .eq("id", userId)
         .maybeSingle();
 
@@ -31,7 +31,13 @@ function AuthBootstrap({ children }: { children: React.ReactNode }) {
       setSession({
         userId,
         role: (profile?.role as "admin" | "superadmin" | "approver" | "supplier") ?? null,
-        companyId: mapping?.[0]?.company_id ?? null,
+        // user_profiles.company_id es la fuente correcta para todos los
+        // roles (2026-08-25: se descubrio que un approver recien creado no
+        // veia nada en Aprobaciones -- companyId salia null porque solo se
+        // leia de user_vendor_mapping, que unicamente existe para
+        // proveedores). El mapping queda como respaldo, no como fuente
+        // principal.
+        companyId: profile?.company_id ?? mapping?.[0]?.company_id ?? null,
         supplierId: mapping?.[0]?.vendor_id ?? null,
         activeCompany: null,
         availableCompanies: [],
