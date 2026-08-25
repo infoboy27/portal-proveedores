@@ -1343,3 +1343,51 @@ rama especial "admin ve todo"). Nunca se había notado porque hasta
 hoy no existía ningún usuario `approver` real para probarlo.
 
 **Desplegado**: `docker compose build app && up -d`.
+
+## 2026-08-25 (continuación 6) — Piso de sync a 1 minuto + usuarios approver/superadmin adicionales
+
+**Piso de sync bajado de 5 a 1 minuto**: pedido en vivo de Jonatan
+tras ver que una orden de compra recién creada en BC no aparecía de
+inmediato. Dos partes: `schema-v14.sql` baja la validación de la RPC
+(`rpc_update_sync_interval`) de "5-1440" a "1-1440"; el tick del
+crontab del servidor se bajó a mano de `*/5` a `* * * * *` en las 4
+líneas del portal (no versionado, mismo patrón que el cambio de
+schema-v10.sql). Aplicado: órdenes y recepciones a 1 minuto, pagos a
+15, proveedores a 3 horas. Verificado en vivo esperando dos corridas
+reales del crontab (`last_run_at` avanzó de 19:28 a 19:30).
+
+**Usuarios adicionales creados** (mismo mecanismo que los 4
+approvers): `w.deschamps@adsemble.do` como segundo `superadmin`
+(agregado, no reemplaza a Jonatan — confirmado explícitamente).
+
+**Aprobadores ahora pueden exportar a BC** (`FeatureGuard.tsx`):
+`exports.read` era exclusivo de admin/superadmin; se agrega a
+`approver` — puede aprobar y exportar lo que aprobó, sin depender de
+un admin para el segundo paso.
+
+**Bug real de OCR encontrado y corregido**: Jonatan reportó "no está
+cargando o leyendo la factura correctamente". Se depuró con una
+Edge Function temporal (`debug-ocr`, creada y borrada en la misma
+sesión) que baja el PDF real de Storage y llama al `ocr-service`
+directo, para ver el texto crudo sin pasar por `extract-invoice-data`.
+Dos bugs reales en el texto de una factura real
+(`Factura_Servicios_RD10620.pdf`):
+1. El patrón de número de factura saltaba desde el título "FACTURA"
+   hasta el "No." de la etiqueta real ("NO. DE FACTURA", en otra
+   línea) y capturaba la palabra "DE" en vez del número. Corregido con
+   un lookahead que exige al menos un dígito en el valor capturado.
+2. Fechas escritas en letras ("25 de agosto de 2026") no se leían —
+   solo se soportaba formato numérico. Se agrega un patrón para fechas
+   en español (`SPANISH_DATE_PATTERN`).
+
+Verificado antes/después del fix contra el texto real y contra los
+casos previos (sin regresión). La factura afectada que ya tenía el
+número mal guardado (`4710b117-...`, "DE") no se pudo corregir a mano
+porque el número correcto ya lo tenía otra copia de la misma factura
+ya confirmada (`10357815-...`, la versión "_corregida" con NCF) — son
+la misma factura subida dos veces; la original queda como borrador
+obsoleto, se puede ignorar o borrar.
+
+**Desplegado**: `docker exec supabase-db psql` (schema-v14.sql),
+`docker compose build app && up -d` (Security.tsx, FeatureGuard.tsx),
+`docker compose build ocr-service && up -d` (fix de OCR).
