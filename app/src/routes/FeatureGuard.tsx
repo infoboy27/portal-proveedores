@@ -34,7 +34,9 @@ export const ROLE_FEATURES: Record<string, string[]> = {
     "users.manage",
     "suppliers.manage",
   ],
-  approver: ["orders.read", "invoices.read", "approvals.review", "payments.read", "audit.read"],
+  // 2026-08-25, pedido de Jonatan: el aprobador tambien puede exportar a BC
+  // despues de aprobar, no solo el admin.
+  approver: ["orders.read", "invoices.read", "approvals.review", "exports.read", "payments.read", "audit.read"],
   supplier: ["orders.read", "invoices.read", "payments.read"],
   // Rol interno para cargar facturas de proveedores recurrentes de
   // servicios (compromiso enviado a Adsemble) — mismos permisos que
