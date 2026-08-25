@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useTranslation } from "@/i18n";
 import { useSessionStore } from "@/store/session";
 import { useDomainStore } from "@/store/domain";
@@ -38,6 +38,7 @@ export function InvoicesList() {
   const [statusFilter, setStatusFilter] = useState<InvoiceStatus | "all">("all");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const isAdmin = session.role === "admin" || session.role === "superadmin";
   const scopeCompanyId = session.activeCompany?.isGlobal ? null : session.activeCompany?.companyId ?? session.companyId;
@@ -88,6 +89,7 @@ export function InvoicesList() {
     const file = e.target.files?.[0] ?? null;
     if (!file || !session.userId) return;
     setUploading(true);
+    setUploadError(null);
     try {
       const invoiceId = (
         await uploadInvoice({
@@ -101,8 +103,9 @@ export function InvoicesList() {
           uploadedByUserId: session.userId,
         })
       ).invoiceId;
-      window.location.href = `/invoices/${invoiceId}`;
-    } finally {
+      window.location.href = `/invoices/${invoiceId}?uploaded=1`;
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "No se pudo subir la factura.");
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
@@ -116,11 +119,14 @@ export function InvoicesList() {
           <p className="max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">{t("invoicesDescription")}</p>
         </div>
         {canUpload && (
-          <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
-            <Button onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-              {uploading ? "..." : t("uploadInvoice")}
-            </Button>
-            <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={handleFile} />
+          <div className="flex flex-col items-end gap-2">
+            <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+              <Button onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+                {uploading ? "Subiendo..." : t("uploadInvoice")}
+              </Button>
+              <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={handleFile} />
+            </div>
+            {uploadError && <p className="max-w-xs text-right text-sm text-rose-600">{uploadError}</p>}
           </div>
         )}
       </section>
@@ -220,6 +226,8 @@ export function InvoicesList() {
 export function InvoiceDetail() {
   const { t } = useTranslation();
   const { invoiceId = "" } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [showUploadedBanner, setShowUploadedBanner] = useState(searchParams.get("uploaded") === "1");
   const session = useSessionStore((s) => s.session);
   const invoices = useDomainStore((s) => s.invoices);
   const purchaseOrders = useDomainStore((s) => s.purchaseOrders);
@@ -253,6 +261,18 @@ export function InvoiceDetail() {
   const order = purchaseOrders.find((po) => po.id === invoice?.purchaseOrderId);
   const supplier = suppliers.find((s) => s.id === invoice?.supplierId);
   const lines = useMemo(() => invoiceLines.filter((l) => l.invoiceId === invoiceId), [invoiceLines, invoiceId]);
+
+  useEffect(() => {
+    if (searchParams.get("uploaded") === "1") {
+      setSearchParams((prev) => {
+        prev.delete("uploaded");
+        return prev;
+      }, { replace: true });
+    }
+    // Solo al montar -- limpia el ?uploaded=1 de la URL una vez leido, para
+    // que un refresh no vuelva a mostrar el banner de exito.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     setPaymentDueDateInput(invoice?.paymentDueDate ?? "");
@@ -385,6 +405,19 @@ export function InvoiceDetail() {
         </div>
       </div>
       {downloadError && <p className="text-sm text-rose-600">{downloadError}</p>}
+
+      {showUploadedBanner && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+          <p className="text-sm font-semibold text-emerald-800">Factura subida correctamente.</p>
+          <button
+            type="button"
+            onClick={() => setShowUploadedBanner(false)}
+            className="text-sm font-semibold text-emerald-700 hover:text-emerald-900"
+          >
+            Cerrar
+          </button>
+        </div>
+      )}
 
       <Card className="p-5">
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
