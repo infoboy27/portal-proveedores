@@ -1055,3 +1055,54 @@ de password nunca se probó de punta a punta por la UI real (solo se
 verificó que la función responde y rechaza tokens inválidos) — falta
 clickearlo una vez con un usuario de prueba antes de mostrarlo al
 equipo de Adsemble.
+
+## 2026-08-25 — OCR: número de factura y total (además de fecha/NCF)
+
+**Contexto:** Jonatan preguntó si el OCR podía leer también número de
+factura y total, no solo fecha/NCF como hasta ahora. La infraestructura
+ya estaba lista del lado de la tabla (`invoices.invoice_number` y
+`invoices.total_amount` existen desde `schema.sql` original, y
+`InvoiceDetail` ya los deja editar a mano) — faltaba solo la
+extracción.
+
+**`ocr-service/app.py`**: dos funciones nuevas, mismo patrón que
+`extract_date`/`extract_ncf` (regex sobre el texto de Tesseract, nunca
+un servicio de pago):
+- `extract_invoice_number()` — a diferencia del NCF, el número de
+  factura no tiene un formato fijo entre proveedores, así que **solo**
+  se acepta si viene etiquetado explícitamente ("Factura No.", "No. de
+  Factura", etc.) — sin fallback "a ciegas", para no capturar basura.
+- `extract_total()` — recorre el texto línea por línea, de abajo hacia
+  arriba (el total casi siempre va después del detalle), buscando
+  líneas con "total" que excluyan "subtotal"/"ITBIS"/"impuesto"/
+  "descuento"/"retención" (para no confundir el total a pagar con el
+  total de impuestos o el subtotal). Prioriza etiquetas fuertes ("Total
+  a Pagar", "Total General"). `_normalize_amount()` maneja ambos
+  formatos de miles/decimales (RD suele mezclar "1.500,00" y
+  "1,500.00" según el software que generó el PDF).
+
+**`extract-invoice-data/index.ts`**: mismo patch condicional que ya
+existía para fecha/NCF — solo escribe `invoice_number`/`total_amount`
+si el campo sigue vacío (`""`/`0`, los defaults de `uploadInvoice` en
+`domain.ts`), nunca pisa lo que el proveedor ya cargó a mano.
+
+**Fuera de alcance a propósito**: las líneas de detalle
+(`invoice_lines`). Con Tesseract puro (texto plano, sin posición/
+bounding boxes por palabra) el parseo de tablas no es confiable entre
+formatos de proveedor distintos — se prefirió no entregar algo poco
+confiable en vez de fingir que funciona. Layout de detección: reader
+de documentos con bounding boxes si se necesita esto más adelante.
+
+**Verificado en vivo contra producción** (no solo revisión de código):
+4 casos sintéticos corridos dentro del contenedor `ocr-service`
+confirmaron los regex antes de desplegar (números con guion, coma
+decimal, "Sub-Total" correctamente excluido del total). Después del
+build+deploy, se corrió `extract-invoice-data` contra una factura real
+de pruebas (`80aba901-...`, `qa-factura-realista.pdf`): extrajo y
+escribió `total_amount = 5000.00` en la base real; no encontró número
+de factura en ese PDF en particular (no trae la etiqueta) — se
+confirmó que no inventó nada, se quedó `null` como se espera.
+
+**Desplegado**: `docker compose build ocr-service && up -d` +
+`docker compose restart functions`, ambos en
+`/home/ubuntu/adsemble/supabase/`.

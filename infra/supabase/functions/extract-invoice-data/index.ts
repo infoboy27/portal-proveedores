@@ -1,8 +1,14 @@
-// Extrae fecha de factura + NCF via OCR self-hosted (Tesseract, servicio interno
-// "ocr-service" — sin depender de ningun servicio de IA de pago). Se invoca justo
-// despues de subir el PDF (uploadInvoice en domain.ts). Solo actualiza los campos
-// que el OCR detecto con confianza; si no detecta nada, la factura queda igual
-// que hoy y el proveedor la completa a mano en el formulario de InvoiceDetail.
+// Extrae fecha de factura, NCF, numero de factura y total via OCR self-hosted
+// (Tesseract, servicio interno "ocr-service" — sin depender de ningun servicio
+// de IA de pago). Se invoca justo despues de subir el PDF (uploadInvoice en
+// domain.ts). Solo actualiza los campos que el OCR detecto con confianza; si
+// no detecta nada, la factura queda igual que hoy y el proveedor la completa
+// a mano en el formulario de InvoiceDetail.
+//
+// Nota (2026-08-25): las lineas de detalle (invoice_lines) NO se extraen por
+// OCR — con Tesseract puro (texto plano, sin bounding boxes) el parseo de
+// tablas es poco confiable entre formatos de proveedor distintos. Se dejo
+// fuera a proposito en vez de entregar algo poco confiable.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 interface ExtractRequest {
@@ -14,6 +20,8 @@ interface OcrResult {
   text?: string;
   invoiceDate?: string | null;
   invoiceTaxNumber?: string | null;
+  invoiceNumber?: string | null;
+  totalAmount?: number | null;
   error?: string;
 }
 
@@ -38,7 +46,7 @@ Deno.serve(async (req: Request) => {
     const db = admin();
     const { data: invoice, error: invErr } = await db
       .from("invoices")
-      .select("id, file_path, invoice_date, invoice_tax_number")
+      .select("id, file_path, invoice_date, invoice_tax_number, invoice_number, total_amount")
       .eq("id", body.invoiceId)
       .single();
     if (invErr || !invoice) throw new Error(`Factura no encontrada: ${invErr?.message}`);
@@ -64,9 +72,14 @@ Deno.serve(async (req: Request) => {
     }
 
     // Nunca pisa un dato que el usuario ya haya cargado a mano.
-    const patch: Record<string, string> = {};
+    // invoice_number/total_amount arrancan en "" / 0 (ver uploadInvoice en
+    // domain.ts) -- falsy es "todavia no lo lleno nadie", igual que null en
+    // invoice_date/invoice_tax_number.
+    const patch: Record<string, string | number> = {};
     if (ocr.invoiceDate && !invoice.invoice_date) patch.invoice_date = ocr.invoiceDate;
     if (ocr.invoiceTaxNumber && !invoice.invoice_tax_number) patch.invoice_tax_number = ocr.invoiceTaxNumber;
+    if (ocr.invoiceNumber && !invoice.invoice_number) patch.invoice_number = ocr.invoiceNumber;
+    if (ocr.totalAmount && !invoice.total_amount) patch.total_amount = ocr.totalAmount;
 
     if (Object.keys(patch).length > 0) {
       const { error: updateErr } = await db.from("invoices").update(patch).eq("id", invoice.id);
@@ -74,7 +87,15 @@ Deno.serve(async (req: Request) => {
     }
 
     return new Response(
-      JSON.stringify({ ok: true, extracted: { invoiceDate: ocr.invoiceDate, invoiceTaxNumber: ocr.invoiceTaxNumber } }),
+      JSON.stringify({
+        ok: true,
+        extracted: {
+          invoiceDate: ocr.invoiceDate,
+          invoiceTaxNumber: ocr.invoiceTaxNumber,
+          invoiceNumber: ocr.invoiceNumber,
+          totalAmount: ocr.totalAmount,
+        },
+      }),
       { headers: { "Content-Type": "application/json" } },
     );
   } catch (err) {

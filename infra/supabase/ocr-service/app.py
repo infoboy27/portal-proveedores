@@ -17,6 +17,45 @@ NCF_LABEL_PATTERN = re.compile(r"(?:NCF|Comprobante\s+Fiscal)[^\n]{0,40}?([A-Z]\
 DATE_LABEL_PATTERN = re.compile(r"Fecha[^\n]{0,20}?(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})", re.IGNORECASE)
 DATE_PATTERN = re.compile(r"\b(\d{1,2})[/\-](\d{1,2})[/\-](\d{2,4})\b")
 
+# Numero de factura del proveedor (distinto del NCF): a diferencia del NCF no
+# tiene un formato fijo entre proveedores, asi que SOLO se acepta si viene
+# etiquetado explicitamente -- sin fallback "a ciegas" como en NCF, para no
+# capturar basura y pisar lo que el proveedor ya escribio a mano.
+INVOICE_NUMBER_LABEL_PATTERN = re.compile(
+    r"(?:Factura\s*(?:No\.?|N[uú]m(?:ero)?\.?|#)|No\.?\s*(?:de\s*)?Factura|N[uú]mero\s+de\s+Factura)"
+    r"\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-\/]{1,19})",
+    re.IGNORECASE,
+)
+
+# Total de la factura: se busca por lineas (no por todo el texto junto) para
+# poder excluir "Subtotal"/"Total ITBIS"/"Total Descuento" etc, que NO son el
+# total a pagar. Recorre de abajo hacia arriba porque el total casi siempre
+# aparece despues de las lineas de detalle.
+TOTAL_EXCLUDE_KEYWORDS = ("subtotal", "sub total", "itbis", "impuesto", "descuento", "retenc", "iva")
+TOTAL_PRIORITY_KEYWORDS = ("total a pagar", "total general", "gran total", "monto total", "total factura")
+MONEY_PATTERN = re.compile(r"(\d[\d.,]*\d|\d)")
+
+
+def _normalize_amount(raw: str) -> float | None:
+    cleaned = re.sub(r"[^\d.,]", "", raw)
+    if not cleaned:
+        return None
+    last_comma = cleaned.rfind(",")
+    last_dot = cleaned.rfind(".")
+    dec_sep = "," if last_comma > last_dot else "." if last_dot > last_comma else None
+    if dec_sep:
+        integer_part, frac_part = cleaned.rsplit(dec_sep, 1)
+        integer_part = re.sub(r"[.,]", "", integer_part)
+        if len(frac_part) != 2 or not frac_part.isdigit():
+            return None
+        normalized = f"{integer_part}.{frac_part}"
+    else:
+        normalized = cleaned
+    try:
+        return float(normalized)
+    except ValueError:
+        return None
+
 
 def extract_ncf(text: str) -> str | None:
     labeled = NCF_LABEL_PATTERN.search(text)
@@ -50,6 +89,31 @@ def extract_date(text: str) -> str | None:
     return None
 
 
+def extract_invoice_number(text: str) -> str | None:
+    match = INVOICE_NUMBER_LABEL_PATTERN.search(text)
+    return match.group(1).strip() if match else None
+
+
+def extract_total(text: str) -> float | None:
+    priority_hit: float | None = None
+    fallback_hit: float | None = None
+    for line in reversed(text.splitlines()):
+        lower = line.lower()
+        if "total" not in lower or any(kw in lower for kw in TOTAL_EXCLUDE_KEYWORDS):
+            continue
+        money_matches = MONEY_PATTERN.findall(line)
+        if not money_matches:
+            continue
+        amount = _normalize_amount(money_matches[-1])
+        if amount is None:
+            continue
+        if any(kw in lower for kw in TOTAL_PRIORITY_KEYWORDS):
+            priority_hit = priority_hit if priority_hit is not None else amount
+        else:
+            fallback_hit = fallback_hit if fallback_hit is not None else amount
+    return priority_hit if priority_hit is not None else fallback_hit
+
+
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({"ok": True, "service": "ocr-service"})
@@ -77,6 +141,8 @@ def extract():
             "text": text,
             "invoiceDate": extract_date(text),
             "invoiceTaxNumber": extract_ncf(text),
+            "invoiceNumber": extract_invoice_number(text),
+            "totalAmount": extract_total(text),
         }
     )
 
