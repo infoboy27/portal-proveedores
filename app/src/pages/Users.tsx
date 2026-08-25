@@ -33,6 +33,7 @@ export function Users() {
   const updateUser = useDomainStore((s) => s.updateUser);
   const createUser = useDomainStore((s) => s.createUser);
   const deleteUser = useDomainStore((s) => s.deleteUser);
+  const resetUserPassword = useDomainStore((s) => s.resetUserPassword);
 
   const isAdmin = session.role === "admin" || session.role === "superadmin";
   const isSuperadmin = session.role === "superadmin";
@@ -40,10 +41,13 @@ export function Users() {
   const [roleFilter, setRoleFilter] = useState<UserRole | "all">("all");
   const [editing, setEditing] = useState<PortalUser | null>(null);
   const [deleting, setDeleting] = useState<PortalUser | null>(null);
+  const [resetting, setResetting] = useState<PortalUser | null>(null);
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetSentTo, setResetSentTo] = useState<string | null>(null);
 
   const scoped = useMemo(() => (isAdmin ? users : users.filter((u) => u.companyId === session.companyId)), [isAdmin, users, session.companyId]);
 
@@ -76,6 +80,21 @@ export function Users() {
       setDeleting(null);
     } catch (err) {
       setDeleteError(err instanceof Error ? err.message : "No fue posible eliminar el usuario.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleReset() {
+    if (!resetting) return;
+    setResetError(null);
+    setResetSentTo(null);
+    setSaving(true);
+    try {
+      const { email } = await resetUserPassword(resetting.id);
+      setResetSentTo(email);
+    } catch (err) {
+      setResetError(err instanceof Error ? err.message : "No fue posible enviar el correo de reset.");
     } finally {
       setSaving(false);
     }
@@ -162,6 +181,18 @@ export function Users() {
                           Editar
                         </Button>
                       )}
+                      {isAdmin && (
+                        <Button
+                          variant="ghost"
+                          onClick={() => {
+                            setResetError(null);
+                            setResetSentTo(null);
+                            setResetting(u);
+                          }}
+                        >
+                          Resetear password
+                        </Button>
+                      )}
                       {isSuperadmin && u.id !== session.userId && (
                         <Button variant="ghost" onClick={() => setDeleting(u)}>
                           Eliminar
@@ -191,6 +222,52 @@ export function Users() {
             onCancel={() => setEditing(null)}
             onSave={handleSave}
           />
+        )}
+      </Modal>
+
+      <Modal
+        open={!!resetting}
+        onClose={() => {
+          setResetting(null);
+          setResetError(null);
+          setResetSentTo(null);
+        }}
+        title="Resetear password"
+      >
+        {resetting && (
+          <div className="space-y-4">
+            {resetSentTo ? (
+              <p className="text-sm text-emerald-700">
+                Correo de reset enviado a <strong>{resetSentTo}</strong>. El enlace expira igual que una recuperación
+                normal — la persona sigue el link y crea su nueva contraseña.
+              </p>
+            ) : (
+              <p className="text-sm text-slate-700">
+                Se le va a enviar un correo real a <strong>{resetting.email}</strong> con un enlace para crear una
+                contraseña nueva. La sesión actual de esa persona, si tenía una activa, no se cierra sola.
+              </p>
+            )}
+            {resetError && <p className="text-sm text-rose-600">{resetError}</p>}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setResetting(null);
+                  setResetError(null);
+                  setResetSentTo(null);
+                }}
+                disabled={saving}
+              >
+                {resetSentTo ? "Cerrar" : "Cancelar"}
+              </Button>
+              {!resetSentTo && (
+                <Button type="button" onClick={handleReset} disabled={saving}>
+                  {saving ? "Enviando..." : "Enviar correo de reset"}
+                </Button>
+              )}
+            </div>
+          </div>
         )}
       </Modal>
 

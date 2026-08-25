@@ -123,6 +123,11 @@ interface DomainStore {
   // Edge Function lo revalida server-side). Primera capacidad real que
   // distingue superadmin de admin.
   deleteUser: (userId: string) => Promise<void>;
+  // Reset de password real (2026-08-24): dispara reset-user-password, que
+  // valida el rol server-side y llama a resetPasswordForEmail (correo real
+  // via SMTP, plantilla recovery.html) -- reemplaza el reset manual por
+  // script que se hacia antes de esto.
+  resetUserPassword: (userId: string) => Promise<{ email: string }>;
   // Onboarding real (2026-08-20): invita un login nuevo de verdad, via la
   // Edge Function invite-user (Admin API + user_profiles + user_vendor_mapping
   // en una sola llamada). Reemplaza el placeholder anterior donde "Crear
@@ -420,5 +425,12 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     if (error) throw error;
     if (!data?.ok) throw new Error(data?.error ?? "No se pudo eliminar el usuario");
     await get().fetchAll();
+  },
+
+  async resetUserPassword(userId) {
+    const { data, error } = await supabase.functions.invoke("reset-user-password", { body: { userId } });
+    if (error) throw error;
+    if (!data?.ok) throw new Error(data?.error ?? "No se pudo enviar el correo de reset");
+    return { email: data.email as string };
   },
 }));

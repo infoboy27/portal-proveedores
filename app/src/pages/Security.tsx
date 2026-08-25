@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { Card } from "@/components/ui/Card";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
 
 const formatDate = (value: string) => (value ? new Date(value).toLocaleString("es-DO") : "-");
 
@@ -11,7 +13,23 @@ const EVENT_LABEL: Record<string, string> = {
   user_reactivated: "Usuario reactivado",
   user_deleted: "Usuario eliminado",
   user_profile_updated: "Perfil actualizado",
+  password_reset_requested: "Reset de password enviado",
+  sync_interval_changed: "Intervalo de sync cambiado",
 };
+
+// Claves de system_settings (schema-v10.sql) en el orden que se muestran.
+const SYNC_INTERVAL_KEYS: { key: string; label: string }[] = [
+  { key: "sync_orders_interval_minutes", label: "Órdenes de compra" },
+  { key: "sync_receipts_interval_minutes", label: "Recepciones" },
+  { key: "sync_payments_interval_minutes", label: "Pagos" },
+  { key: "sync_vendors_interval_minutes", label: "Proveedores" },
+];
+
+interface SyncIntervalRow {
+  key: string;
+  value_minutes: number;
+  last_run_at: string | null;
+}
 
 interface AuditRow {
   id: string;
@@ -41,8 +59,26 @@ interface AuthEventRow {
 export function Security() {
   const [auditLog, setAuditLog] = useState<AuditRow[]>([]);
   const [authEvents, setAuthEvents] = useState<AuthEventRow[]>([]);
+  const [intervals, setIntervals] = useState<SyncIntervalRow[]>([]);
+  const [intervalDrafts, setIntervalDrafts] = useState<Record<string, string>>({});
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [intervalError, setIntervalError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  async function loadIntervals() {
+    const { data, error: err } = await supabase
+      .from("system_settings")
+      .select("key, value_minutes, last_run_at")
+      .in("key", SYNC_INTERVAL_KEYS.map((k) => k.key));
+    if (err) {
+      setIntervalError(err.message);
+      return;
+    }
+    const rows = (data ?? []) as SyncIntervalRow[];
+    setIntervals(rows);
+    setIntervalDrafts(Object.fromEntries(rows.map((r) => [r.key, String(r.value_minutes)])));
+  }
 
   useEffect(() => {
     async function load() {
@@ -57,9 +93,29 @@ export function Security() {
       setAuditLog((auditRes.data ?? []) as AuditRow[]);
       setAuthEvents((authRes.data ?? []) as AuthEventRow[]);
       setLoading(false);
+      await loadIntervals();
     }
     load();
   }, []);
+
+  async function handleSaveInterval(key: string) {
+    const minutes = Number(intervalDrafts[key]);
+    setIntervalError(null);
+    if (!Number.isInteger(minutes) || minutes < 5 || minutes > 1440) {
+      setIntervalError("El intervalo debe ser un número entero entre 5 y 1440 minutos.");
+      return;
+    }
+    setSavingKey(key);
+    try {
+      const { error: err } = await supabase.rpc("rpc_update_sync_interval", { p_key: key, p_minutes: minutes });
+      if (err) throw err;
+      await loadIntervals();
+    } catch (err) {
+      setIntervalError(err instanceof Error ? err.message : "No se pudo actualizar el intervalo.");
+    } finally {
+      setSavingKey(null);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -72,6 +128,50 @@ export function Security() {
       </section>
 
       {error && <p className="text-sm text-rose-600">{error}</p>}
+
+      <Card className="overflow-hidden p-0">
+        <div className="border-b border-slate-100 px-5 py-5">
+          <h2 className="text-lg font-semibold text-slate-950">Intervalos de sincronización con Business Central</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Cada cuántos minutos se trae órdenes, recepciones, pagos y proveedores. El piso real es el ciclo del
+            servidor (5 min) — un valor menor a eso no corre más seguido que eso.
+          </p>
+        </div>
+        <div className="divide-y divide-slate-100 px-5">
+          {SYNC_INTERVAL_KEYS.map(({ key, label }) => {
+            const row = intervals.find((r) => r.key === key);
+            return (
+              <div key={key} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">{label}</p>
+                  <p className="text-xs text-slate-500">
+                    Última corrida: {row?.last_run_at ? formatDate(row.last_run_at) : "todavía no ha corrido"}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min={5}
+                    max={1440}
+                    value={intervalDrafts[key] ?? ""}
+                    onChange={(e) => setIntervalDrafts((d) => ({ ...d, [key]: e.target.value }))}
+                    className="w-24"
+                  />
+                  <span className="text-sm text-slate-500">min</span>
+                  <Button
+                    variant="ghost"
+                    disabled={savingKey === key || intervalDrafts[key] === String(row?.value_minutes ?? "")}
+                    onClick={() => handleSaveInterval(key)}
+                  >
+                    {savingKey === key ? "Guardando..." : "Guardar"}
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {intervalError && <p className="px-5 pb-4 text-sm text-rose-600">{intervalError}</p>}
+      </Card>
 
       <Card className="overflow-hidden p-0">
         <div className="border-b border-slate-100 px-5 py-5">
