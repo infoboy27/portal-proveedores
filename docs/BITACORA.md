@@ -1299,3 +1299,47 @@ después del fix — antes, 2 de los 3 fallaban.
 **Desplegado**: `schema-v13.sql` aplicado con `docker exec
 supabase-db psql`; `resolve-login-identifier` redesplegado
 (`docker compose restart functions`).
+
+## 2026-08-25 (continuación 5) — Primeros usuarios `approver` + bug de companyId nulo
+
+**Primeros usuarios con rol `approver` del sistema**: Jonatan pidió
+crear a los 4 de "Usuarios Revisión y Aprobación" (imagen que mandó) —
+Lorenny Frías, Yessica Medina, Leidy Aquino, Verónica Tejeda, las 4
+`@adsemble.do`. Hasta ahora solo existían `admin` (`c.cuevas@`) y
+`superadmin` (Jonatan) — nunca se había probado un `approver` real.
+Creadas vía `auth/v1/invite` (Admin API, mismo mecanismo que
+`invite-user`) + `user_profiles` (`role='approver'`,
+`company_id`=Adsemble) + `security_audit_log`, replicando exactamente
+lo que hace `provisionInvitedUser` — no se pasó por la Edge Function
+porque hacerlo desde la app hubiera requerido el JWT de sesión de
+Jonatan, no disponible desde aquí. Como el correo de invitación tiene
+el mismo problema de Office 365 (ver arriba), se generaron enlaces
+directos (`admin/generate_link`, `type=invite`,
+`redirect_to=/set-password`) para que cada una pusiera su contraseña
+sin depender del correo.
+
+**Bug real encontrado al probar la primera aprobadora**: Lorenny
+entró bien, pero "Aprobaciones pendientes" no mostraba nada pese a
+haber una factura en `pending_approval` para Adsemble
+(`1d471c50-...`). Se descartó RLS/datos simulando su sesión real
+contra Postgres (`set local "request.jwt.claim.sub"`) — la fila SÍ es
+visible a nivel de base para su rol/empresa. El bug estaba en
+`App.tsx`: `session.companyId` se poblaba **solo** desde
+`user_vendor_mapping` (tabla que únicamente tiene filas para
+`supplier`/`service_uploader`), nunca desde
+`user_profiles.company_id` directamente — cualquier `approver` sin
+mapping de proveedor (todos los casos reales) terminaba con
+`companyId = null`. `Approvals.tsx` filtra estrictamente por
+`inv.companyId === session.companyId`, sin un "si es null, mostrar
+todo" como sí tiene la rama de admin en otras pantallas — por eso la
+lista salía vacía en vez de fallar más ruidosamente. Corregido:
+`companyId` ahora sale de `user_profiles.company_id` primero, con el
+mapping de proveedor solo como respaldo.
+
+**Alcance del bug**: no era exclusivo de Lorenny — afectaba a
+cualquier `approver` (y, por la misma lógica, a `admin`/`superadmin`
+en cualquier pantalla que dependiera de `session.companyId` sin la
+rama especial "admin ve todo"). Nunca se había notado porque hasta
+hoy no existía ningún usuario `approver` real para probarlo.
+
+**Desplegado**: `docker compose build app && up -d`.
