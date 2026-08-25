@@ -1252,3 +1252,50 @@ correctamente por OCR) — el problema era puramente de UI, no de datos.
 Jonatan hacer un refresh forzado (Ctrl+Shift+R) una vez para
 descartar que su navegador ya tuviera cacheada la versión vieja de
 antes de este fix.
+
+## 2026-08-25 (continuación 4) — Correo de reset sin cuerpo + login por RNC roto
+
+**Correo de reset/invitación sin cuerpo**: Jonatan mandó captura — el
+asunto ya salía bien en español, pero el cuerpo llegaba vacío, solo la
+firma corporativa de Adsemble (logo, dirección, redes sociales). Se
+revisó el archivo real dentro del contenedor `supabase-auth`
+(`/etc/auth/templates/recovery.html`) — está perfecto, y los logs de
+GoTrue muestran el envío completándose sin ningún error (`status:200`,
+~2s). Conclusión: no es un bug de nuestro lado — el HTML completo sale
+bien del servidor. Todo apunta a una regla de flujo de correo (Mail
+Flow Rule / disclaimer) en el tenant de Office 365 de `adsemble.do`
+para `soporte@adsemble.do` que **reemplaza** el cuerpo en vez de
+agregarle la firma. Necesita revisión de quien administra el Exchange
+Admin Center de Adsemble — fuera de lo que se puede tocar desde este
+servidor. De paso se corrigió algo que sí estaba mal de este lado: el
+asunto salía en inglés (`GOTRUE_MAILER_SUBJECTS_RECOVERY`/`_INVITE` no
+estaban configurados) — ya quedó en español.
+
+**Login por RNC/cédula no funcionaba**: reporte de Jonatan. Se
+encontraron dos bugs reales probando en vivo contra los 3 vendors que
+tienen usuario mapeado:
+1. `resolve-login-identifier` comparaba el RNC ya normalizado (sin
+   guiones) contra `vendors.tax_registration_number` **crudo** — BC
+   casi siempre lo guarda con guiones (`131-00000-1`), así que la
+   comparación casi nunca calzaba (de los 3 vendors probados, solo uno
+   funcionaba, por casualidad, porque BC no le puso guiones a ese
+   RNC). Se agrega `vendors.tax_registration_number_digits`, columna
+   **generada** (siempre en sync, sin depender de que nadie normalice
+   nada al escribir) y se compara contra esa en vez del texto crudo.
+2. El vendor de pruebas `df41c0e0` (RNC `00118863612`, el de Jonatan)
+   tenía **dos** filas `is_primary=true` en `user_vendor_mapping`
+   (`jonathanmaria+proveedor@` y `jonathanmaria+qa2026@`, de sesiones
+   de QA distintas). La función usa `.maybeSingle()`, que falla
+   silenciosamente con más de una fila — ese login caía siempre a "no
+   encontrado" aunque el vendor y el mapping existieran. Se dejó una
+   sola primaria (`jonathanmaria+proveedor@gmail.com`) y se agrega un
+   índice único parcial (`user_vendor_mapping_one_primary_per_vendor_uq`)
+   para que esto no pueda repetirse con ningún vendor.
+
+**Verificado en vivo contra producción** (no solo revisión de código):
+los 3 RNCs reales, con y sin guiones, resuelven al correo correcto
+después del fix — antes, 2 de los 3 fallaban.
+
+**Desplegado**: `schema-v13.sql` aplicado con `docker exec
+supabase-db psql`; `resolve-login-identifier` redesplegado
+(`docker compose restart functions`).
