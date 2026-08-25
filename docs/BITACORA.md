@@ -1225,3 +1225,30 @@ de darlo por completamente confirmado.
 
 **Desplegado**: `schema-v12.sql` aplicado con `docker exec supabase-db
 psql`; frontend reconstruido (`docker compose build app && up -d`).
+
+## 2026-08-25 (continuación 3) — Sin feedback visible al subir CP-000213
+
+**Reporte de Jonatan**: subió la factura de la orden CP-000213 y no
+vio ningún mensaje de éxito/error ni indicador de que estaba
+subiendo. Se verificó en la base que la factura sí se creó bien
+(`1d471c50-...`, NCF `B0100000002`, total `2360.00` extraído
+correctamente por OCR) — el problema era puramente de UI, no de datos.
+
+**Dos causas encontradas**:
+1. `nginx.conf` no tenía `Cache-Control` explícito en `index.html` —
+   el navegador podía quedarse sirviendo una versión vieja del bundle
+   (sin el manejo de error/éxito agregado hoy) después de un redeploy,
+   sin que el usuario lo notara. Se agrega `Cache-Control: no-cache`
+   solo para `index.html` (los assets con hash siguen cacheando 30d
+   normal, eso no cambia) para que cada carga revalide con el
+   servidor.
+2. El indicador de "subiendo" era solo el texto del botón cambiando a
+   "Subiendo..." — fácil de no percibir, sobre todo con una subida
+   rápida. Se reemplaza por un spinner + texto "Subiendo factura..."
+   visible junto al botón, activo durante toda la duración real
+   (subida a Storage + insert + llamada a OCR).
+
+**Desplegado**: `docker compose build app && up -d`. Se le pidió a
+Jonatan hacer un refresh forzado (Ctrl+Shift+R) una vez para
+descartar que su navegador ya tuviera cacheada la versión vieja de
+antes de este fix.
