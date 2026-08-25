@@ -67,6 +67,12 @@ services:
     environment:
       GOTRUE_MAILER_TEMPLATES_INVITE: /etc/auth/templates/invite.html
       GOTRUE_MAILER_TEMPLATES_RECOVERY: /etc/auth/templates/recovery.html
+      # Sin esto, GoTrue usa su asunto default en ingles ("Reset Your
+      # Password" / "You have been invited") aunque el cuerpo si tenga la
+      # plantilla en espanol -- encontrado el 2026-08-25 al recibir un
+      # correo de reset real por primera vez.
+      GOTRUE_MAILER_SUBJECTS_INVITE: "Invitación al Portal de Proveedores Adsemble"
+      GOTRUE_MAILER_SUBJECTS_RECOVERY: "Restablece tu contraseña — Portal de Proveedores Adsemble"
 
 networks:
   winu-bot-signal-network:
