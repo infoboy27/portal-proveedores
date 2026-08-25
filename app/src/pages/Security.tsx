@@ -101,8 +101,8 @@ export function Security() {
   async function handleSaveInterval(key: string) {
     const minutes = Number(intervalDrafts[key]);
     setIntervalError(null);
-    if (!Number.isInteger(minutes) || minutes < 5 || minutes > 1440) {
-      setIntervalError("El intervalo debe ser un número entero entre 5 y 1440 minutos.");
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
+      setIntervalError("El intervalo debe ser un número entero entre 1 y 1440 minutos.");
       return;
     }
     setSavingKey(key);
@@ -134,7 +134,7 @@ export function Security() {
           <h2 className="text-lg font-semibold text-slate-950">Intervalos de sincronización con Business Central</h2>
           <p className="mt-1 text-sm text-slate-600">
             Cada cuántos minutos se trae órdenes, recepciones, pagos y proveedores. El piso real es el ciclo del
-            servidor (5 min) — un valor menor a eso no corre más seguido que eso.
+            servidor (1 min) — un valor menor a eso no corre más seguido que eso.
           </p>
         </div>
         <div className="divide-y divide-slate-100 px-5">
@@ -151,7 +151,7 @@ export function Security() {
                 <div className="flex items-center gap-2">
                   <Input
                     type="number"
-                    min={5}
+                    min={1}
                     max={1440}
                     value={intervalDrafts[key] ?? ""}
                     onChange={(e) => setIntervalDrafts((d) => ({ ...d, [key]: e.target.value }))}
