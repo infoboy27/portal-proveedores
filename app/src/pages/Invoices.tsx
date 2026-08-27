@@ -130,7 +130,13 @@ export function InvoicesList() {
               <Button onClick={() => fileInputRef.current?.click()} disabled={uploading}>
                 {t("uploadInvoice")}
               </Button>
-              <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={handleFile} />
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/pdf,.pdf,image/jpeg,.jpg,.jpeg,image/png,.png"
+                className="hidden"
+                onChange={handleFile}
+              />
             </div>
             {uploadError && <p className="max-w-xs text-right text-sm text-rose-600">{uploadError}</p>}
           </div>
@@ -312,6 +318,10 @@ export function InvoiceDetail() {
   const isApprover = session.role === "admin" || session.role === "superadmin" || session.role === "approver";
   const canConfirm = session.role === "supplier" && invoice.status === "uploaded";
   const canDecide = isApprover && invoice.status === "pending_approval";
+  // PROVINFORM (informal) e INT (extranjero) no manejan NCF dominicano --
+  // categoria sincronizada desde BC (vendorPostingSetups), no inventada por
+  // el portal. Por defecto (vacio/desconocido) se sigue exigiendo NCF.
+  const ncfRequired = !["PROVINFORM", "INT"].includes(supplier?.vendorPostingGroup ?? "");
 
   async function handleApprove() {
     if (!session.userId) return;
@@ -333,8 +343,26 @@ export function InvoiceDetail() {
   }
   async function handleConfirm() {
     if (!session.userId) return;
-    if (!invoiceDateInput || !invoiceTaxNumberInput.trim()) {
-      setConfirmError("La fecha de factura y el Comprobante Fiscal (NCF) son obligatorios para poder exportar a Business Central.");
+    if (!invoiceNumberInput.trim()) {
+      setConfirmError("El numero de factura es obligatorio.");
+      return;
+    }
+    if (!invoiceDateInput) {
+      setConfirmError("La fecha de factura es obligatoria.");
+      return;
+    }
+    // Corte de recepcion de facturas: dia 25 de cada mes (confirmado con
+    // Jonatan 2026-08-26). Se parsea como componentes locales, no
+    // new Date(string), por el mismo motivo que formatDate arriba.
+    const [, , dayStr] = invoiceDateInput.split("-");
+    if (Number(dayStr) > 25) {
+      setConfirmError(
+        "El corte de recepcion de facturas es el dia 25 de cada mes. Debes subir esta factura con fecha del mes siguiente.",
+      );
+      return;
+    }
+    if (ncfRequired && !invoiceTaxNumberInput.trim()) {
+      setConfirmError("El Comprobante Fiscal (NCF) es obligatorio para este proveedor.");
       return;
     }
     const totalAmount = Number(invoiceTotalInput);
@@ -555,13 +583,18 @@ export function InvoiceDetail() {
                   />
                 </div>
                 <div>
-                  <label className="text-xs uppercase tracking-[0.18em] text-slate-500">{t("invoiceTaxNumber")} (NCF)</label>
+                  <label className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                    {t("invoiceTaxNumber")} (NCF){!ncfRequired && " — opcional"}
+                  </label>
                   <Input
                     value={invoiceTaxNumberInput}
                     onChange={(e) => setInvoiceTaxNumberInput(e.target.value)}
                     placeholder="E31..."
                     className="mt-1"
                   />
+                  {!ncfRequired && (
+                    <p className="mt-1 text-xs text-slate-500">Proveedor informal/extranjero: no requiere NCF.</p>
+                  )}
                 </div>
                 <div>
                   <label className="text-xs uppercase tracking-[0.18em] text-slate-500">{t("invoiceTotalLabel")}</label>

@@ -1391,3 +1391,85 @@ obsoleto, se puede ignorar o borrar.
 **Desplegado**: `docker exec supabase-db psql` (schema-v14.sql),
 `docker compose build app && up -d` (Security.tsx, FeatureGuard.tsx),
 `docker compose build ocr-service && up -d` (fix de OCR).
+
+---
+
+## 2026-08-26 — Plan de observaciones de usuarios finales + Fase 1/3/4
+
+**Contexto:** Jonatan trajo 11 observaciones de los consumidores finales del
+portal (proveedores y equipo interno) tras la demo en vivo. Antes de tocar
+código se armó un plan de desarrollo (artefacto HTML) contrastando cada
+punto contra el código real, no contra suposiciones. Dos de los puntos
+necesitaban que Jonatan definiera la regla de negocio antes de programar:
+
+1. **Corte de facturación día 25**: confirmado que ES un bloqueo, no una
+   reclasificación automática — fecha de factura con día > 25 se rechaza
+   pidiendo reenviar con fecha del mes siguiente.
+2. **Proveedores informales/extranjeros, NCF opcional**: Jonatan aclaró que
+   la categoría ya existe en el módulo de proveedores de BC. Se confirmó en
+   vivo contra el sandbox (vía `vendorPostingSetups`, la misma API custom
+   que ya se usaba para el NCF fiscal): el campo `vendorPostingGroup` ya
+   tiene exactamente los códigos que Jonatan mencionó, configurados en los
+   3,494 proveedores reales — `CPPROV` (2,070, formal), `PROVINFORM` (1,174,
+   informal), `INT` (144, extranjero), `CXPRELAC` (9, relacionadas, fuera de
+   alcance por ahora). No hizo falta inventar ningún numerador nuevo.
+
+**Implementado (Fase 1 + 3 + 4 del plan):**
+
+1. **Validación server-side real al confirmar factura** — hasta ahora
+   "Confirmar datos" (sección "Acciones", `Invoices.tsx`) llamaba al RPC
+   genérico `rpc_update_invoice_status`, que no valida nada; toda la
+   obligatoriedad de fecha/NCF/número/total vivía solo en el formulario y
+   era saltable llamando el RPC directo. Nuevo RPC
+   `rpc_confirm_invoice_for_approval` (`schema-v15.sql`) re-valida el
+   estado ACTUAL de la fila antes de permitir el paso a
+   `pending_approval`: número de factura obligatorio (antes no se exigía),
+   fecha obligatoria y con día ≤ 25, total > 0, y NCF obligatorio *excepto*
+   cuando el proveedor es `PROVINFORM` o `INT`. Mismo patrón de
+   autorización que `rpc_confirm_purchase_order`/`rpc_mark_invoice_paid`
+   (rol admin/superadmin o dueño vía `user_vendor_mapping`). Probado en
+   vivo con `begin;...rollback;` contra datos reales: 5 casos (informal sin
+   NCF → pasa; fecha 27 → rechaza; número vacío → rechaza; formal sin NCF →
+   rechaza; usuario de otro proveedor → rechaza), los 5 con el resultado
+   esperado.
+2. **`vendors.vendor_posting_group`** — columna nueva, sincronizada en
+   `bc-sync-vendors` desde `vendorPostingSetups` (antes solo se traía
+   `number/displayName/taxRegistrationNumber/email/blocked` de la API
+   estándar de `/vendors`). Sync corrido en vivo: 3,494 proveedores, conteos
+   por grupo verificados que coinciden exactamente con BC.
+3. **`bc-export-invoice`** — el bloqueo de NCF obligatorio ahora es
+   condicional al `vendor_posting_group`; si es `PROVINFORM`/`INT` se
+   omite también el PATCH a `purchaseInvoiceFiscals` (antes se hacía
+   incondicional, habría fallado con NCF vacío).
+4. **Formato de subida ampliado a PDF + foto** — `accept` del input en
+   `Invoices.tsx` y validación de tipo en `uploadInvoice` (domain.ts) ahora
+   permiten `application/pdf`, `image/jpeg`, `image/png` (antes solo PDF).
+   `ocr-service/app.py` ahora rama por `Content-Type`: imagen se lee
+   directo con Tesseract, PDF sigue rasterizándose con `pdf2image` como
+   antes. `extract-invoice-data` decide el `Content-Type` a mandar según la
+   extensión real del archivo. Probado en vivo: imagen sintética (texto
+   borroso a propósito) extrae fecha correctamente sin error — confirma que
+   la rama de imagen corre bien end-to-end; PDF real re-testeado sin
+   regresión (mismo resultado exacto que el fix de ayer).
+5. **Popup de resultado en Monitor de Exportaciones** (`Exports.tsx`) — antes
+   "Exportar ahora" no daba ningún feedback inmediato (había que refrescar y
+   leer el estado). Ahora `exportInvoice` devuelve `{bcInvoiceNumber,
+   attached}` y se muestra un modal de éxito/error al instante.
+6. **NCF opcional en el formulario del proveedor** — la sección "Acciones"
+   ahora sabe si el proveedor de la factura es informal/extranjero
+   (`supplier.vendorPostingGroup`) y marca el campo NCF como opcional en la
+   UI, coherente con la validación del servidor.
+
+**Desplegado**: `psql` (schema-v15.sql) + restart `rest`; `docker compose
+restart functions` (bc-sync-vendors, bc-export-invoice,
+extract-invoice-data); `docker compose build ocr-service && up -d`;
+`docker compose build app && up -d` (tsc limpio). Verificado que el bundle
+en producción sí trae las cadenas nuevas.
+
+**Pendiente (Fase 2 del plan, no tocada esta sesión):** selector de orden
+de compra al subir factura (hoy `purchaseOrderId` se manda `null` siempre —
+`Invoices.tsx:handleFile`), visualización embebida de la factura (hoy solo
+hay descarga), y la UI para mostrar el acumulado facturado vs. el monto de
+la orden cuando hay varias facturas sobre la misma PO. También sigue
+abierto el tratamiento de `CXPRELAC` (9 proveedores) y el "Expense Class
+Code" de BC (ver sesión anterior).

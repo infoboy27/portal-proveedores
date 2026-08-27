@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useTranslation } from "@/i18n";
 import { useSessionStore } from "@/store/session";
 import { useDomainStore } from "@/store/domain";
@@ -5,6 +6,10 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { ExportStatusBadge } from "@/components/ui/ExportStatusBadge";
+
+type ExportResult =
+  | { kind: "success"; invoiceNumber: string; bcInvoiceNumber: string; attached: boolean }
+  | { kind: "error"; invoiceNumber: string; message: string };
 
 // Reconstruccion de `function wP()` (Monitoreo de exportaciones) del bundle
 // original, index-beautified.js:27330.
@@ -28,10 +33,20 @@ export function Exports() {
   const exportInvoice = useDomainStore((s) => s.exportInvoice);
   const fetchAll = useDomainStore((s) => s.fetchAll);
   const loading = useDomainStore((s) => s.loading);
+  const [exportingId, setExportingId] = useState<string | null>(null);
+  const [result, setResult] = useState<ExportResult | null>(null);
 
-  async function handleExport(invoiceId: string) {
+  async function handleExport(invoiceId: string, invoiceNumber: string) {
     if (!session.userId) return;
-    await exportInvoice(invoiceId, session.userId);
+    setExportingId(invoiceId);
+    try {
+      const { bcInvoiceNumber, attached } = await exportInvoice(invoiceId, session.userId);
+      setResult({ kind: "success", invoiceNumber, bcInvoiceNumber, attached });
+    } catch (err) {
+      setResult({ kind: "error", invoiceNumber, message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setExportingId(null);
+    }
   }
 
   return (
@@ -68,7 +83,9 @@ export function Exports() {
                 ) : null}
               </div>
               {inv.status === "approved" || inv.status === "ready_for_export" ? (
-                <Button onClick={() => handleExport(inv.id)}>{t("exportNow")}</Button>
+                <Button onClick={() => handleExport(inv.id, inv.invoiceNumber)} disabled={exportingId === inv.id}>
+                  {exportingId === inv.id ? "Exportando..." : t("exportNow")}
+                </Button>
               ) : null}
             </div>
           </Card>
@@ -79,6 +96,36 @@ export function Exports() {
           </Card>
         )}
       </div>
+
+      {result && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4" role="dialog" aria-modal="true">
+          <Card className="w-full max-w-md p-6">
+            {result.kind === "success" ? (
+              <>
+                <p className="text-sm font-semibold uppercase tracking-[0.18em] text-emerald-600">
+                  Exportacion exitosa
+                </p>
+                <p className="mt-2 text-lg font-semibold text-slate-950">Factura {result.invoiceNumber}</p>
+                <p className="mt-3 text-sm text-slate-600">
+                  Creada en Business Central como <span className="font-semibold text-slate-900">{result.bcInvoiceNumber}</span>.
+                </p>
+                <p className="mt-1 text-sm text-slate-600">
+                  {result.attached ? "El PDF se adjunto correctamente." : "No tenia PDF para adjuntar."}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-semibold uppercase tracking-[0.18em] text-rose-600">Error al exportar</p>
+                <p className="mt-2 text-lg font-semibold text-slate-950">Factura {result.invoiceNumber}</p>
+                <p className="mt-3 text-sm text-rose-700">{result.message}</p>
+              </>
+            )}
+            <div className="mt-5 flex justify-end">
+              <Button onClick={() => setResult(null)}>Cerrar</Button>
+            </div>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }

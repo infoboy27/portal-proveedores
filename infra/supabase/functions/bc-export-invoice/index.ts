@@ -136,16 +136,25 @@ Deno.serve(async (req: Request) => {
     // mismo SystemId que ya devolvio la creacion estandar del paso 1. Sin
     // esto, Microsoft.NAV.post rechaza el posteo con "Fiscal Document No.
     // must have a value" — confirmado en vivo en /qa 2026-08-20.
-    if (!invoice.invoice_tax_number) {
+    //
+    // Excepcion (2026-08-26): proveedores informales/extranjeros no tienen
+    // NCF dominicano. vendor.vendor_posting_group viene de vendorPostingSetups
+    // (sincronizado por bc-sync-vendors) -- PROVINFORM e INT son los codigos
+    // reales confirmados contra el sandbox. Por defecto (grupo vacio/desconocido)
+    // se sigue exigiendo NCF, igual que antes.
+    const ncfExempt = vendor.vendor_posting_group === "PROVINFORM" || vendor.vendor_posting_group === "INT";
+    if (!ncfExempt && !invoice.invoice_tax_number) {
       throw new Error(
         `La factura ${created.number} se creo en BC pero no tiene NCF (invoice_tax_number) — Business Central no la va a dejar postear sin ese dato`,
       );
     }
-    await bcPatch(
-      `/purchaseInvoiceFiscals(${created.id})`,
-      { fiscalDocumentNo: invoice.invoice_tax_number },
-      "custom",
-    );
+    if (invoice.invoice_tax_number) {
+      await bcPatch(
+        `/purchaseInvoiceFiscals(${created.id})`,
+        { fiscalDocumentNo: invoice.invoice_tax_number },
+        "custom",
+      );
+    }
 
     // NOTA: existe un segundo campo obligatorio para postear, "Expense
     // Class Code" (misma page 58004, campo `expenseClassCode`) — clasificacion

@@ -68,7 +68,10 @@ interface DomainStore {
   fetchAll: () => Promise<void>;
   approveInvoice: (invoiceId: string, changedBy: string) => Promise<void>;
   rejectInvoice: (invoiceId: string, changedBy: string, reason: string) => Promise<void>;
-  exportInvoice: (invoiceId: string, changedBy: string) => Promise<void>;
+  exportInvoice: (
+    invoiceId: string,
+    changedBy: string,
+  ) => Promise<{ bcInvoiceNumber: string; attached: boolean }>;
   confirmInvoiceForApproval: (invoiceId: string, changedBy: string) => Promise<void>;
   // Confirmacion de orden de compra (Dias 7-9): registro solo-portal, nunca
   // escribe a BC directo — ver rpc_confirm_purchase_order en schema-v4.sql.
@@ -259,6 +262,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     if (error) throw error;
     if (!data?.ok) throw new Error(data?.error ?? "La exportacion a Business Central fallo");
     await get().fetchAll();
+    return { bcInvoiceNumber: data.bcInvoiceNumber as string, attached: !!data.attached };
   },
 
   async updateInvoiceData(invoiceId, patch) {
@@ -333,12 +337,17 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
 
   // Replica `confirmInvoiceForApproval`: el proveedor confirma que los datos
   // extraidos por OCR son correctos y la factura pasa a pending_approval.
+  //
+  // Antes llamaba al RPC generico rpc_update_invoice_status, que no valida
+  // nada -- la obligatoriedad de fecha/NCF/numero/total vivia solo en
+  // Invoices.tsx (handleConfirm), saltable llamando el RPC directo. Ahora
+  // usa rpc_confirm_invoice_for_approval (schema-v15.sql), que re-valida
+  // esos campos sobre el estado ACTUAL de la fila (ya escrito por
+  // updateInvoiceData justo antes) antes de permitir la transicion.
   async confirmInvoiceForApproval(invoiceId, changedBy) {
-    const { error } = await supabase.rpc("rpc_update_invoice_status", {
+    const { error } = await supabase.rpc("rpc_confirm_invoice_for_approval", {
       p_invoice_id: invoiceId,
-      p_status: "pending_approval",
-      p_changed_by: changedBy,
-      p_reason: "confirmed_by_provider",
+      p_user_id: changedBy,
     });
     if (error) throw error;
     await get().fetchAll();
@@ -353,6 +362,11 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
   // si el OCR falla o no encuentra nada, la factura queda igual que antes —
   // el formulario de InvoiceDetail sigue siendo editable a mano.
   async uploadInvoice(input) {
+    const allowedTypes = ["application/pdf", "image/jpeg", "image/png"];
+    if (input.file.type && !allowedTypes.includes(input.file.type)) {
+      throw new Error("Solo se permite subir la factura en PDF o como foto (JPG/PNG).");
+    }
+
     const filePath = `${input.companyId}/${crypto.randomUUID()}-${input.file.name}`;
     const { error: uploadError } = await supabase.storage
       .from("invoices")

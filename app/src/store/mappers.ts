@@ -121,6 +121,7 @@ export function mapSupplier(row: Record<string, unknown>): Supplier {
     status,
     blocked: status === "blocked",
     validInvoiceTaxNumber: (row.valid_invoice_tax_number as boolean) ?? undefined,
+    vendorPostingGroup: (row.vendor_posting_group as string | null) ?? null,
   };
 }
 

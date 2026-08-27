@@ -46,7 +46,7 @@ Deno.serve(async (req: Request) => {
     const db = admin();
     const { data: invoice, error: invErr } = await db
       .from("invoices")
-      .select("id, file_path, invoice_date, invoice_tax_number, invoice_number, total_amount")
+      .select("id, file_path, filename, invoice_date, invoice_tax_number, invoice_number, total_amount")
       .eq("id", body.invoiceId)
       .single();
     if (invErr || !invoice) throw new Error(`Factura no encontrada: ${invErr?.message}`);
@@ -58,12 +58,22 @@ Deno.serve(async (req: Request) => {
     }
 
     const { data: fileBlob, error: downloadErr } = await db.storage.from("invoices").download(invoice.file_path);
-    if (downloadErr) throw new Error(`No se pudo leer el PDF de Storage: ${downloadErr.message}`);
+    if (downloadErr) throw new Error(`No se pudo leer el archivo de Storage: ${downloadErr.message}`);
     const bytes = new Uint8Array(await fileBlob.arrayBuffer());
+
+    // El proveedor puede subir PDF o foto (JPG/PNG) -- ocr-service decide
+    // rasterizar-como-PDF vs. leer-imagen-directo segun este Content-Type,
+    // asi que tiene que reflejar el archivo real, no asumir siempre PDF.
+    const lowerName = (invoice.filename ?? "").toLowerCase();
+    const contentType = lowerName.endsWith(".png")
+      ? "image/png"
+      : lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg")
+        ? "image/jpeg"
+        : "application/pdf";
 
     const ocrRes = await fetch("http://ocr-service:8080/extract", {
       method: "POST",
-      headers: { "Content-Type": "application/pdf" },
+      headers: { "Content-Type": contentType },
       body: bytes,
     });
     const ocr = (await ocrRes.json()) as OcrResult;

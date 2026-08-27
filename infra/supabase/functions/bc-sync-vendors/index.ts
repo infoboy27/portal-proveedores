@@ -32,6 +32,18 @@ interface BcVendor {
   blocked: string;
 }
 
+// vendorPostingGroup viene de la API custom vendorPostingSetups (ya existia
+// para Gen. Bus. Posting Group / Vendor Posting Group, ver
+// infra/business-central/src/VendorPostingSetupAPI.al) -- NO de la API
+// estandar de /vendors, que no la expone. Confirmado en vivo 2026-08-26
+// contra el sandbox: los valores reales que usa Adsemble son CPPROV
+// (proveedor formal, NCF obligatorio), PROVINFORM (informal, NCF opcional)
+// e INT (extranjero, NCF opcional) -- ver plan de observaciones de usuarios.
+interface BcVendorPostingSetup {
+  number: string;
+  vendorPostingGroup: string;
+}
+
 interface SyncVendorsRequest {
   inviteNewVendors?: boolean;
 }
@@ -69,6 +81,8 @@ Deno.serve(async (req: Request) => {
 
     const companyId = await resolveCompanyId(db);
     const vendors = await bcGetAll<BcVendor>("/vendors");
+    const postingSetups = await bcGetAll<BcVendorPostingSetup>("/vendorPostingSetups", "custom");
+    const postingGroupByNumber = new Map(postingSetups.map((p) => [p.number, p.vendorPostingGroup || null]));
 
     // Que vendor_number ya existian ANTES de este upsert -- se necesita
     // saber esto antes de escribir, porque despues del upsert ya no hay
@@ -83,6 +97,7 @@ Deno.serve(async (req: Request) => {
       company_name: v.displayName,
       email: v.email || null,
       status: v.blocked && v.blocked.trim() !== "" ? "blocked" : "active",
+      vendor_posting_group: postingGroupByNumber.get(v.number) ?? null,
     }));
 
     // Upsert en bloque -- una sola llamada, no una por vendor (ver

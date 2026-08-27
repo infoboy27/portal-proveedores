@@ -139,6 +139,10 @@ export interface Supplier {
   status: string;
   blocked: boolean;
   validInvoiceTaxNumber?: boolean;
+  // Sincronizado desde BC (vendorPostingSetups). CPPROV = formal (NCF
+  // obligatorio), PROVINFORM = informal, INT = extranjero (NCF opcional
+  // para estos dos ultimos) -- ver schema-v15.sql.
+  vendorPostingGroup?: string | null;
 }
 
 export interface PortalCompany {

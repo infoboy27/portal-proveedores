@@ -4,6 +4,7 @@ from datetime import datetime
 
 from flask import Flask, request, jsonify
 from pdf2image import convert_from_bytes
+from PIL import Image
 import pytesseract
 
 app = Flask(__name__)
@@ -146,19 +147,33 @@ def health():
 
 @app.route("/extract", methods=["POST"])
 def extract():
-    pdf_bytes = request.get_data()
-    if not pdf_bytes:
-        return jsonify({"ok": False, "error": "Body vacio, se esperaba el PDF en crudo"}), 400
+    file_bytes = request.get_data()
+    if not file_bytes:
+        return jsonify({"ok": False, "error": "Body vacio, se esperaba el archivo en crudo"}), 400
 
-    try:
-        pages = convert_from_bytes(pdf_bytes, dpi=200, first_page=1, last_page=1)
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"ok": False, "error": f"No se pudo rasterizar el PDF: {exc}"}), 422
+    # El proveedor tambien puede subir una foto de la factura (JPG/PNG), no
+    # solo PDF -- ver Invoices.tsx (accept ampliado 2026-08-26). El
+    # Content-Type que manda extract-invoice-data decide la rama: una imagen
+    # se lee directo con Tesseract, sin pasar por pdf2image (que solo sabe
+    # rasterizar PDFs).
+    content_type = (request.content_type or "").lower()
+    is_image = content_type.startswith("image/")
 
-    if not pages:
-        return jsonify({"ok": False, "error": "El PDF no tiene paginas"}), 422
+    if is_image:
+        try:
+            image = Image.open(io.BytesIO(file_bytes))
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"ok": False, "error": f"No se pudo leer la imagen: {exc}"}), 422
+    else:
+        try:
+            pages = convert_from_bytes(file_bytes, dpi=200, first_page=1, last_page=1)
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"ok": False, "error": f"No se pudo rasterizar el PDF: {exc}"}), 422
+        if not pages:
+            return jsonify({"ok": False, "error": "El PDF no tiene paginas"}), 422
+        image = pages[0]
 
-    text = pytesseract.image_to_string(pages[0], lang="spa")
+    text = pytesseract.image_to_string(image, lang="spa")
 
     return jsonify(
         {
