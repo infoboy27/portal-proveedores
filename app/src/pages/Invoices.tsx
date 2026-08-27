@@ -39,11 +39,26 @@ export function InvoicesList() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const NO_ORDER = "__none__";
+  const [selectedOrderId, setSelectedOrderId] = useState<string>("");
 
   const isAdmin = session.role === "admin" || session.role === "superadmin";
   const scopeCompanyId = session.activeCompany?.isGlobal ? null : session.activeCompany?.companyId ?? session.companyId;
   const isSupplier = session.role === "supplier";
   const canUpload = session.role === "admin" || session.role === "superadmin" || isSupplier;
+
+  // Ordenes del proveedor donde tiene sentido cargar una factura -- "las que
+  // tenga la orden de compra" (pedido de Jonatan, plan 2026-08-26). Se
+  // excluyen "draft" (todavia no es real en BC) y "closed" (ya se
+  // liquido). "partially_invoiced" se incluye a proposito: es el estado
+  // normal cuando ya se cargo una factura y falta otra sobre la misma
+  // orden (varias facturas por PO).
+  const openOrdersForSupplier = useMemo(() => {
+    if (!isSupplier || !session.supplierId) return [];
+    return purchaseOrders.filter(
+      (po) => po.vendorId === session.supplierId && (po.status === "open" || po.status === "partially_invoiced"),
+    );
+  }, [purchaseOrders, isSupplier, session.supplierId]);
 
   const scoped = useMemo(
     () =>
@@ -85,16 +100,24 @@ export function InvoicesList() {
     [scoped],
   );
 
+  // El proveedor debe elegir explicitamente una orden o "Sin orden de
+  // compra" antes de poder subir -- antes esto se mandaba `null` siempre
+  // sin preguntar, y la factura quedaba sin vincular sin que nadie lo
+  // decidiera (plan de observaciones de usuarios, 2026-08-26).
+  const requiresOrderChoice = isSupplier && openOrdersForSupplier.length > 0;
+  const canPickFile = !requiresOrderChoice || selectedOrderId !== "";
+
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0] ?? null;
     if (!file || !session.userId) return;
     setUploading(true);
     setUploadError(null);
     try {
+      const purchaseOrderId = selectedOrderId && selectedOrderId !== NO_ORDER ? selectedOrderId : null;
       const invoiceId = (
         await uploadInvoice({
           companyId: scopeCompanyId ?? session.companyId ?? "",
-          purchaseOrderId: null,
+          purchaseOrderId,
           vendorId: isSupplier ? (session.supplierId ?? null) : null,
           invoiceNumber: "",
           vendorName: "",
@@ -103,6 +126,7 @@ export function InvoicesList() {
           uploadedByUserId: session.userId,
         })
       ).invoiceId;
+      setSelectedOrderId("");
       window.location.href = `/invoices/${invoiceId}?uploaded=1`;
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "No se pudo subir la factura.");
@@ -127,7 +151,23 @@ export function InvoicesList() {
                   Subiendo factura...
                 </div>
               )}
-              <Button onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+              {requiresOrderChoice && (
+                <Select
+                  value={selectedOrderId}
+                  onChange={(e) => setSelectedOrderId(e.target.value)}
+                  className="sm:w-64"
+                  disabled={uploading}
+                >
+                  <option value="">Selecciona la orden de compra...</option>
+                  {openOrdersForSupplier.map((po) => (
+                    <option key={po.id} value={po.id}>
+                      {po.orderNumber} — {formatCurrency(po.amount)}
+                    </option>
+                  ))}
+                  <option value={NO_ORDER}>Sin orden de compra</option>
+                </Select>
+              )}
+              <Button onClick={() => fileInputRef.current?.click()} disabled={uploading || !canPickFile}>
                 {t("uploadInvoice")}
               </Button>
               <input
@@ -273,6 +313,15 @@ export function InvoiceDetail() {
   const order = purchaseOrders.find((po) => po.id === invoice?.purchaseOrderId);
   const supplier = suppliers.find((s) => s.id === invoice?.supplierId);
   const lines = useMemo(() => invoiceLines.filter((l) => l.invoiceId === invoiceId), [invoiceLines, invoiceId]);
+  // Puede haber varias facturas sobre la misma orden (plan de observaciones
+  // de usuarios, 2026-08-26) -- se muestra cuanto ya se facturo de otras
+  // facturas de esta orden para que el proveedor vea el saldo disponible.
+  const otherInvoicesOnOrderTotal = useMemo(() => {
+    if (!order) return 0;
+    return invoices
+      .filter((inv) => inv.id !== invoiceId && inv.purchaseOrderId === order.id && inv.status !== "rejected")
+      .reduce((sum, inv) => sum + inv.total, 0);
+  }, [invoices, order, invoiceId]);
 
   useEffect(() => {
     if (searchParams.get("uploaded") === "1") {
@@ -610,6 +659,13 @@ export function InvoiceDetail() {
                   {order && (
                     <p className="mt-1 text-xs text-slate-500">
                       {t("purchaseOrder")}: {formatCurrency(order.amount)}
+                      {otherInvoicesOnOrderTotal > 0 && (
+                        <>
+                          {" "}
+                          · Ya facturado: {formatCurrency(otherInvoicesOnOrderTotal)} · Disponible:{" "}
+                          {formatCurrency(order.amount - otherInvoicesOnOrderTotal)}
+                        </>
+                      )}
                     </p>
                   )}
                 </div>

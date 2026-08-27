@@ -221,6 +221,12 @@ export function OrderDetail() {
     [purchaseOrderReceipts, orderId],
   );
   const linkedInvoices = useMemo(() => invoices.filter((inv) => inv.purchaseOrderId === orderId), [invoices, orderId]);
+  // Una orden puede tener varias facturas -- se excluyen las rechazadas del
+  // acumulado, igual que en InvoiceDetail y en la validacion de domain.ts.
+  const invoicedTotal = useMemo(
+    () => linkedInvoices.filter((inv) => inv.status !== "rejected").reduce((sum, inv) => sum + inv.total, 0),
+    [linkedInvoices],
+  );
   const confirmPurchaseOrder = useDomainStore((s) => s.confirmPurchaseOrder);
 
   const canUpload =
@@ -404,7 +410,13 @@ export function OrderDetail() {
             <Button onClick={() => fileInputRef.current?.click()} disabled={uploading}>
               {uploading ? "..." : t("uploadInvoice")}
             </Button>
-            <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={handleFile} />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/pdf,.pdf,image/jpeg,.jpg,.jpeg,image/png,.png"
+              className="hidden"
+              onChange={handleFile}
+            />
           </div>
         </Card>
       )}
@@ -488,6 +500,12 @@ export function OrderDetail() {
       <Card className="overflow-hidden p-0">
         <div className="border-b border-slate-100 px-5 py-5">
           <h2 className="text-lg font-semibold text-slate-950">{t("invoicesLinkedToOrder")}</h2>
+          {linkedInvoices.length > 0 && (
+            <p className="mt-1 text-sm text-slate-600">
+              Facturado: {formatCurrency(invoicedTotal)} de {formatCurrency(order.amount)} · Disponible:{" "}
+              {formatCurrency(order.amount - invoicedTotal)}
+            </p>
+          )}
         </div>
         {linkedInvoices.length === 0 ? (
           <div className="p-5">

@@ -1466,10 +1466,57 @@ extract-invoice-data); `docker compose build ocr-service && up -d`;
 `docker compose build app && up -d` (tsc limpio). Verificado que el bundle
 en producción sí trae las cadenas nuevas.
 
-**Pendiente (Fase 2 del plan, no tocada esta sesión):** selector de orden
-de compra al subir factura (hoy `purchaseOrderId` se manda `null` siempre —
-`Invoices.tsx:handleFile`), visualización embebida de la factura (hoy solo
-hay descarga), y la UI para mostrar el acumulado facturado vs. el monto de
-la orden cuando hay varias facturas sobre la misma PO. También sigue
-abierto el tratamiento de `CXPRELAC` (9 proveedores) y el "Expense Class
-Code" de BC (ver sesión anterior).
+**Pendiente al cierre de esta entrada:** selector de orden de compra al
+subir factura, visualización embebida de la factura, y la UI del
+acumulado facturado — resuelto en la Fase 2, ver abajo. Sigue abierto el
+tratamiento de `CXPRELAC` (9 proveedores) y el "Expense Class Code" de BC
+(ver sesión anterior).
+
+---
+
+## 2026-08-26 (continuación) — Fase 2: vincular factura ↔ orden de compra
+
+**Hallazgo antes de programar:** `OrderDetail.tsx` (vista de una orden
+específica, `/orders/:id`) YA tenía un flujo de subida que sí manda
+`purchaseOrderId: order.id` (línea `handleFile`) y YA mostraba la lista de
+facturas vinculadas a esa orden sin restricción de una sola — el soporte
+para varias facturas por orden ya existía ahí, no hubo que construirlo
+desde cero. Lo único roto en ese flujo era el mismo bug de formato que se
+arregló ayer en la lista general (`accept="application/pdf,.pdf"` sin
+fotos) — corregido.
+
+El hueco real estaba en el botón "Subir factura" de la lista general de
+facturas (`Invoices.tsx`, el más visible/usado): mandaba `purchaseOrderId:
+null` siempre, sin preguntar, así que cualquier factura subida desde ahí
+quedaba "Sin vincular" sin que el proveedor lo decidiera.
+
+**Implementado:**
+
+1. **Selector de orden obligatorio cuando aplica** — en la lista general de
+   facturas, si el proveedor tiene órdenes propias en estado `open` o
+   `partially_invoiced`, aparece un selector antes de poder elegir el
+   archivo (incluye la opción explícita "Sin orden de compra" — nunca se
+   asume en silencio). Si no tiene ninguna orden abierta, el flujo queda
+   igual que antes (sin selector, sin orden).
+2. **Corrección de un bug real de cálculo con varias facturas por orden**
+   — la validación de "el total no puede superar el monto de la orden"
+   (`domain.ts:updateInvoiceData`) comparaba solo la factura actual contra
+   el monto completo de la orden. Con varias facturas sobre la misma
+   orden, eso dejaba pasar un total combinado mayor al de la orden. Ahora
+   suma las demás facturas de esa orden (excluyendo las rechazadas) antes
+   de comparar.
+3. **Visibilidad del acumulado** — tanto en la ficha de la factura
+   ("Acciones") como en la ficha de la orden (lista de facturas
+   vinculadas) se muestra "Facturado: X de Y · Disponible: Z" cuando hay
+   más de una factura sobre la misma orden.
+
+**No incluido en esta fase** (fuera del alcance original del punto #3 del
+plan): visor embebido de la factura dentro del portal — sigue existiendo
+solo la descarga (botón "Descargar PDF"). Se puede agregar en una próxima
+vuelta si Jonatan lo pide.
+
+**Desplegado**: `docker compose build app && up -d` (tsc limpio, sin
+errores). Verificado que el bundle trae las cadenas nuevas ("Selecciona la
+orden de compra", "Ya facturado", "Sin orden de compra"). Confirmado en
+producción que hay 15 órdenes reales en estado `open` — el selector tiene
+datos reales que mostrar, no es solo teórico.

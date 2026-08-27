@@ -312,13 +312,29 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     }
 
     // Monto: si la factura esta vinculada a una orden de compra, el total
-    // no puede superar el monto de esa orden.
+    // acumulado de TODAS las facturas de esa orden (esta incluida) no puede
+    // superar el monto de la orden. Antes solo comparaba esta factura sola
+    // contra el monto completo -- con varias facturas sobre la misma orden
+    // (soportado desde 2026-08-26, ver plan de observaciones de usuarios)
+    // eso dejaba pasar un total combinado mayor al de la orden. Se excluyen
+    // las rechazadas: una factura rechazada no deberia seguir "reservando"
+    // presupuesto de la orden.
     if (current.purchaseOrderId) {
       const order = get().purchaseOrders.find((po) => po.id === current.purchaseOrderId);
-      if (order && patch.totalAmount > order.amount) {
-        throw new Error(
-          `El total de la factura (${patch.totalAmount.toFixed(2)}) supera el monto de la orden de compra vinculada (${order.amount.toFixed(2)}).`,
-        );
+      if (order) {
+        const othersTotal = get()
+          .invoices.filter(
+            (inv) => inv.id !== invoiceId && inv.purchaseOrderId === current.purchaseOrderId && inv.status !== "rejected",
+          )
+          .reduce((sum, inv) => sum + inv.total, 0);
+        const combinedTotal = othersTotal + patch.totalAmount;
+        if (combinedTotal > order.amount) {
+          throw new Error(
+            othersTotal > 0
+              ? `El total de esta factura (${patch.totalAmount.toFixed(2)}) sumado a lo ya facturado en esta orden (${othersTotal.toFixed(2)}) supera el monto de la orden de compra (${order.amount.toFixed(2)}).`
+              : `El total de la factura (${patch.totalAmount.toFixed(2)}) supera el monto de la orden de compra vinculada (${order.amount.toFixed(2)}).`,
+          );
+        }
       }
     }
 
