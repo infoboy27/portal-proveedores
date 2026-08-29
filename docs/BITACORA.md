@@ -1761,3 +1761,87 @@ falta todavia.
 
 **Desplegado**: `docker compose restart functions` (bc-sync-vendors,
 resolve-login-identifier).
+
+---
+
+## 2026-08-29 (continuación) — Multiempresa: Fase 4 (RLS) + Fase 5 (selector de empresa)
+
+**Hallazgo antes de programar Fase 4:** la mayoría de las tablas de datos
+(`invoices`, `purchase_orders`, `purchase_orders_lines`, etc.) YA estaban
+bien para multiempresa del lado del proveedor — su RLS usa
+`portal_vendor_ids()` (schema-v3.sql), que ya es un `SETOF` desde
+`user_vendor_mapping` y por lo tanto ya cubre todas las empresas a las
+que un proveedor está vinculado. Lo único atado a una sola empresa
+(`portal_company_id()`, un escalar) era: (1) `companies` — qué empresas
+puede *listar* el usuario, necesario para el selector; y (2) el INSERT
+de Storage al subir una factura — validaba el prefijo de carpeta contra
+`portal_company_id()` únicamente, así que un proveedor subiendo a su
+segunda empresa habría sido rechazado ahí aunque todo lo demás ya lo
+permitiera.
+
+**Implementado (`schema-v18.sql`):**
+- `portal_company_ids()` — nueva función, unión de las empresas del
+  usuario vía `user_vendor_mapping` + su `user_profiles.company_id`
+  (cubre tanto proveedores como staff interno).
+- Política `companies` reescrita para usar el conjunto, no el escalar.
+- Política de INSERT del bucket `invoices` reescrita igual.
+- Las políticas de `approver` (scoped por `portal_company_id()` en
+  invoices/purchase_orders/lectura de Storage) se dejaron **tal cual** a
+  propósito — no hay pedido de que un aprobador interno revise varias
+  empresas a la vez.
+
+**Implementado (Fase 5, frontend):**
+- `SessionState` ahora guarda `vendorMappings` (todas las filas de
+  `user_vendor_mapping` del usuario, no solo la primera).
+- `useSessionStore` gana `setActiveCompany()`: al cambiar de empresa,
+  recalcula `supplierId` a partir del `vendor_id` que le corresponde a
+  esa empresa (BC no comparte proveedores entre empresas, así que un
+  mismo proveedor real tiene un `vendor_id` distinto por cada una). No
+  hace falta volver a pedir datos — `invoices`/`purchase_orders` ya
+  llegaron con todas las empresas del usuario, las páginas ya filtran
+  por `session.supplierId`/`companyId` en un `useMemo`.
+- `App.tsx` puebla `availableCompanies` de verdad (antes vacío). Para
+  admin/superadmin se agrega una opción sintética "Todas las empresas" al
+  principio, y arrancan ahí por defecto — preserva el comportamiento que
+  ya tenían.
+- Selector de empresa nuevo en `AppShell.tsx` (solo visible si hay más de
+  una opción — la mayoría de los usuarios hoy no lo ven, nada cambia para
+  ellos).
+
+**Bug real encontrado en vivo (no en teoría):** la consulta de empresas
+de `App.tsx` heredó el `.is("disabled_at", null)` del fetch general de
+`domain.ts`, pensado para "no listar empresas sin activar". Pero
+`disabled_at` controla si `bc-sync-*` procesa esa empresa, **no** si un
+usuario que ya tiene un vínculo real a ella puede seguir viéndola en su
+propio selector — con una empresa vinculada pero pausada, el usuario
+simplemente no la veía en su selector aunque RLS sí lo dejara. Corregido
+quitando ese filtro específicamente en `App.tsx` (el de `domain.ts` se
+deja igual, es para el listado general de admin).
+
+**Verificado en vivo, extremo a extremo (no simulado):**
+- RLS: un proveedor con 1 sola empresa ve 1; con 2 empresas reales
+  (montadas a propósito) ve exactamente esas 2; admin ve las 11.
+- Storage INSERT: simulado el predicado exacto contra las 2 empresas del
+  proveedor (ambas `true`) y una empresa random (`false`).
+- **Con el navegador real**: logueado como el proveedor de prueba con 2
+  empresas, el selector apareció, se cambió a DUCKTAPE (sin recargar la
+  página — cambio 100% client-side), y se subió un PDF real — quedó en
+  la base con `company_id` de DUCKTAPE y el `file_path` en la carpeta
+  correcta. Confirma que el fix de Storage funciona con el flujo real de
+  la app, no solo en la simulación SQL.
+- Logueado como admin: dashboard mostró "Company: Todas las empresas" y
+  la factura recién subida en DUCKTAPE apareció junto a las de Adsemble
+  — confirma el default de admin.
+- Toda la data de prueba (factura, PDF, mappings temporales) se limpió
+  después. Solo Adsemble sigue activa en producción.
+
+**Pendiente, a propósito:** Fase 6 (columna "Empresa" en las vistas de
+admin, para distinguir filas cuando haya de verdad más de una empresa
+con data real) sigue sin tocar — con una sola empresa activa hoy no hace
+falta todavía, y ya se ve venir la necesidad exacta con la prueba de
+DUCKTAPE (el dashboard de admin ya mezcla ambas sin ninguna etiqueta que
+diga cuál es cuál).
+
+**Desplegado**: `psql` (schema-v18.sql) + restart `rest`; `docker
+compose build app && up -d` (dos veces — el primer intento no filtraba
+bien `disabled_at`, la corrección real fue el segundo build).

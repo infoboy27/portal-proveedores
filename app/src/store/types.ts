@@ -27,6 +27,17 @@ export interface Company {
   isGlobal?: boolean;
 }
 
+// Un (empresa, proveedor) por cada empresa a la que el usuario esta
+// vinculado (Fase 3, auto-vinculo por RNC, 2026-08-29) -- BC no comparte
+// proveedores entre empresas, asi que un mismo proveedor real tiene un
+// vendor_id DISTINTO por cada empresa. Sirve para recalcular supplierId
+// cuando el usuario cambia de empresa activa (ver session.ts:setActiveCompany).
+export interface VendorMapping {
+  companyId: string;
+  vendorId: string;
+  isPrimary: boolean;
+}
+
 export interface SessionState {
   userId: string | null;
   role: UserRole | null;
@@ -34,6 +45,7 @@ export interface SessionState {
   supplierId: string | null;
   activeCompany: Company | null;
   availableCompanies: Company[];
+  vendorMappings: VendorMapping[];
 }
 
 export interface Invoice {
