@@ -6,6 +6,7 @@
 // frontend directamente.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { bcGetAll } from "../_shared/bc-client.ts";
+import { getActiveCompanies } from "../_shared/companies.ts";
 import { markRan, shouldRun } from "../_shared/sync-throttle.ts";
 
 const THROTTLE_KEY = "sync_receipts_interval_minutes";
@@ -25,13 +26,6 @@ function admin() {
   });
 }
 
-async function resolveCompanyId(db: ReturnType<typeof admin>): Promise<string> {
-  const bcCompanyId = Deno.env.get("BC_COMPANY_ID")!;
-  const { data, error } = await db.from("companies").select("id").eq("bc_code", bcCompanyId).single();
-  if (error || !data) throw new Error(`No se encontro companies.bc_code = ${bcCompanyId}: ${error?.message}`);
-  return data.id as string;
-}
-
 Deno.serve(async () => {
   try {
     const db = admin();
@@ -42,58 +36,78 @@ Deno.serve(async () => {
       });
     }
 
-    const companyId = await resolveCompanyId(db);
-    const receipts = await bcGetAll<BcPurchaseReceipt>("/purchaseReceipts", "custom");
+    const companies = await getActiveCompanies(db);
 
+    let receiptsProcessed = 0;
     let created = 0;
     let updated = 0;
     let skippedNoOrder = 0;
+    const perCompany: unknown[] = [];
 
-    for (const receipt of receipts) {
-      // orderNo es el numero legible de la orden (purchase_orders.order_number
-      // via bc-sync-orders), no el bc_id — asi es como lo expone la Custom API.
-      const { data: order } = await db
-        .from("purchase_orders")
-        .select("id")
-        .eq("order_number", receipt.orderNo)
-        .eq("company_id", companyId)
-        .maybeSingle();
+    for (const company of companies) {
+      const receipts = await bcGetAll<BcPurchaseReceipt>(company.bcCompanyId, "/purchaseReceipts", "custom");
+      let companyCreated = 0;
+      let companyUpdated = 0;
+      let companySkippedNoOrder = 0;
 
-      if (!order) {
-        skippedNoOrder++;
-        continue;
+      for (const receipt of receipts) {
+        // orderNo es el numero legible de la orden (purchase_orders.order_number
+        // via bc-sync-orders), no el bc_id — asi es como lo expone la Custom API.
+        const { data: order } = await db
+          .from("purchase_orders")
+          .select("id")
+          .eq("order_number", receipt.orderNo)
+          .eq("company_id", company.id)
+          .maybeSingle();
+
+        if (!order) {
+          companySkippedNoOrder++;
+          continue;
+        }
+
+        const row = {
+          order_id: order.id as string,
+          company_id: company.id,
+          bc_id: receipt.id,
+          receipt_number: receipt.number,
+          vendor_shipment_no: receipt.vendorShipmentNo || null,
+          posting_date: receipt.postingDate || null,
+        };
+
+        const { data: existing } = await db
+          .from("purchase_order_receipts")
+          .select("id")
+          .eq("bc_id", receipt.id)
+          .maybeSingle();
+
+        if (existing) {
+          const { error } = await db.from("purchase_order_receipts").update(row).eq("id", existing.id);
+          if (error) throw error;
+          companyUpdated++;
+        } else {
+          const { error } = await db.from("purchase_order_receipts").insert(row);
+          if (error) throw error;
+          companyCreated++;
+        }
       }
 
-      const row = {
-        order_id: order.id as string,
-        company_id: companyId,
-        bc_id: receipt.id,
-        receipt_number: receipt.number,
-        vendor_shipment_no: receipt.vendorShipmentNo || null,
-        posting_date: receipt.postingDate || null,
-      };
-
-      const { data: existing } = await db
-        .from("purchase_order_receipts")
-        .select("id")
-        .eq("bc_id", receipt.id)
-        .maybeSingle();
-
-      if (existing) {
-        const { error } = await db.from("purchase_order_receipts").update(row).eq("id", existing.id);
-        if (error) throw error;
-        updated++;
-      } else {
-        const { error } = await db.from("purchase_order_receipts").insert(row);
-        if (error) throw error;
-        created++;
-      }
+      receiptsProcessed += receipts.length;
+      created += companyCreated;
+      updated += companyUpdated;
+      skippedNoOrder += companySkippedNoOrder;
+      perCompany.push({
+        company: company.name,
+        receiptsProcessed: receipts.length,
+        created: companyCreated,
+        updated: companyUpdated,
+        skippedNoOrder: companySkippedNoOrder,
+      });
     }
 
     await markRan(db, THROTTLE_KEY);
 
     return new Response(
-      JSON.stringify({ ok: true, receiptsProcessed: receipts.length, created, updated, skippedNoOrder }),
+      JSON.stringify({ ok: true, companiesProcessed: companies.length, receiptsProcessed, created, updated, skippedNoOrder, perCompany }),
       { headers: { "Content-Type": "application/json" } },
     );
   } catch (err) {

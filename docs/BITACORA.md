@@ -1633,3 +1633,64 @@ escritores existentes ya no rompan cuando se conecte la segunda empresa.
 
 **Desplegado**: `psql` (schema-v16.sql) + restart `rest`; `docker compose
 restart functions` (bc-sync-orders, bc-sync-vendors).
+
+---
+
+## 2026-08-29 (continuación) — Multiempresa: Fase 2 (cliente de BC + sincronización multiempresa)
+
+**Implementado:**
+
+1. **`bc-client.ts`** — `BC_COMPANY_ID` dejo de ser variable de entorno.
+   Las 5 funciones exportadas (`bcGet`, `bcGetAll`, `bcPost`, `bcPatch`,
+   `bcAttachFile`) ahora reciben el GUID de la empresa como primer
+   argumento. El tenant/credenciales de Azure AD siguen siendo
+   compartidos (confirmado en vivo: un solo token sirve las 15 empresas).
+2. **`_shared/companies.ts`** (nuevo) — `getActiveCompanies(db)`, unico
+   punto que decide que empresas procesa cada sync (`disabled_at is
+   null`, mismo campo que ya existia, sin columna nueva).
+3. **Las 4 funciones de sync** (`bc-sync-vendors`, `bc-sync-orders`,
+   `bc-sync-receipts`, `bc-sync-payments`) ahora iteran sobre las
+   empresas activas en vez de resolver una sola. Un solo throttle por
+   corrida (no uno por empresa) — como el loop procesa todas las
+   empresas activas dentro de la misma invocacion, no hay una marca de
+   tiempo compartida que puedan pisarse entre si; se descarto la idea
+   original del plan de throttles por empresa por innecesaria.
+4. **`bc-sync-payments`** — hallazgo nuevo durante esta fase: el matching
+   de facturas por NCF/numero no filtraba por `company_id` en absoluto
+   (la funcion nunca habia resuelto una empresa). Con empresas que
+   comparten NCFs (como ya pasa hoy), esto podia marcar como pagada la
+   factura de la empresa equivocada. Corregido junto con el loop.
+5. **`bc-export-invoice`** — no es un sync programado, es por-factura.
+   Resuelve el GUID de BC a partir de `purchase_orders.company_id` ->
+   `companies.bc_code`, no de una variable de entorno.
+6. **`schema-v17.sql`** — se agregaron las 10 empresas restantes en
+   alcance a `companies`, con sus GUID reales confirmados contra BC.
+   Insertadas **deshabilitadas** (`disabled_at = now()`) a proposito: el
+   loop ya esta listo para procesarlas, pero activar las 10 de golpe
+   sincroniza decenas de miles de filas de una vez sin que nadie lo haya
+   pedido todavia.
+
+**Verificado en vivo:**
+- Las 4 funciones de sync corridas contra Adsemble (unica empresa activa)
+  dieron resultados identicos a las corridas pre-Fase 2 — sin regresion.
+- `bc-export-invoice` re-exportado sobre una factura real
+  (FAC-2026-0825-001) para probar la resolucion de empresa vía
+  `order.company_id` -> `companies.bc_code` — creo `CF-001930` en BC
+  correctamente, PDF adjunto.
+- **Prueba supervisada de 2 empresas reales:** se activo DUCKTAPE
+  temporalmente, se corrio `bc-sync-vendors` (`companiesProcessed: 2`,
+  3,494 + 3,474 proveedores procesados por separado), se confirmo que
+  `PROV-000001` ahora existe como 2 filas distintas (una por empresa,
+  ambas "REVESTIDA SRL") sin colision -- exactamente el escenario que la
+  Fase 1 estaba diseñada para resolver. **DUCKTAPE se volvio a
+  deshabilitar despues de la prueba** (sigue con sus 3,474 proveedores ya
+  sincronizados en la base -- no se borraron, solo la empresa vuelve a
+  estar oculta del selector hasta que se pida activarla de verdad).
+
+**Pendiente, a proposito:** activar las demas empresas una por una (o
+todas) queda a decision de Jonatan -- el mecanismo ya esta probado.
+Login/RLS/frontend (Fases 3-6 del plan) siguen sin tocar.
+
+**Desplegado**: `psql` (schema-v17.sql); `docker compose restart
+functions` (bc-client.ts, companies.ts, las 4 funciones de sync,
+bc-export-invoice).

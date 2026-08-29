@@ -21,6 +21,7 @@
 // cerrado (Open = false).
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { bcGetAll } from "../_shared/bc-client.ts";
+import { getActiveCompanies } from "../_shared/companies.ts";
 import { markRan, shouldRun } from "../_shared/sync-throttle.ts";
 
 const THROTTLE_KEY = "sync_payments_interval_minutes";
@@ -80,80 +81,108 @@ Deno.serve(async () => {
       });
     }
 
-    // Un solo GET a BC (paginado, filtrado server-side a solo tipo Factura)
-    // y una sola query a Supabase — evita el patron N+1 (una consulta por
-    // cada uno de los miles de asientos) que causo timeout en la primera
-    // version de esta funcion.
-    const [entries, invoicesRes] = await Promise.all([
-      bcGetAll<BcVendorLedgerEntry>("/vendorLedgerEntries?$filter=documentType eq 'Invoice'", "custom"),
-      db
-        .from("invoices")
-        .select("id, invoice_number, invoice_tax_number, bc_invoice_number, paid_at, bc_ledger_entry_no")
-        .eq("status", "processed"),
-    ]);
-    if (invoicesRes.error) throw invoicesRes.error;
+    const companies = await getActiveCompanies(db);
 
-    const invoices = (invoicesRes.data ?? []) as InvoiceRow[];
-    const byExternalDoc = new Map<string, InvoiceRow>();
-    const byBcNumber = new Map<string, InvoiceRow>();
-    for (const inv of invoices) {
-      if (inv.invoice_tax_number) byExternalDoc.set(inv.invoice_tax_number, inv);
-      if (inv.invoice_number && !byExternalDoc.has(inv.invoice_number)) byExternalDoc.set(inv.invoice_number, inv);
-      if (inv.bc_invoice_number) byBcNumber.set(inv.bc_invoice_number, inv);
-    }
-
+    let entriesProcessed = 0;
     let matched = 0;
     let markedPaid = 0;
     let dueDateUpdated = 0;
     let skippedNoMatch = 0;
+    const perCompany: unknown[] = [];
 
-    for (const entry of entries) {
-      const invoice = findInvoice(entry, byExternalDoc, byBcNumber);
-      if (!invoice) {
-        skippedNoMatch++;
-        continue;
+    for (const company of companies) {
+      // Un solo GET a BC (paginado, filtrado server-side a solo tipo
+      // Factura) y una sola query a Supabase, YA scoped por empresa --
+      // antes esta funcion no filtraba invoices por company_id en
+      // absoluto, asi que un NCF/numero de factura coincidente entre dos
+      // empresas (ya pasa hoy: 11 empresas comparten proveedores/numeros)
+      // podia marcar como pagada la factura de la empresa equivocada.
+      const [entries, invoicesRes] = await Promise.all([
+        bcGetAll<BcVendorLedgerEntry>(company.bcCompanyId, "/vendorLedgerEntries?$filter=documentType eq 'Invoice'", "custom"),
+        db
+          .from("invoices")
+          .select("id, invoice_number, invoice_tax_number, bc_invoice_number, paid_at, bc_ledger_entry_no")
+          .eq("status", "processed")
+          .eq("company_id", company.id),
+      ]);
+      if (invoicesRes.error) throw invoicesRes.error;
+
+      const invoices = (invoicesRes.data ?? []) as InvoiceRow[];
+      const byExternalDoc = new Map<string, InvoiceRow>();
+      const byBcNumber = new Map<string, InvoiceRow>();
+      for (const inv of invoices) {
+        if (inv.invoice_tax_number) byExternalDoc.set(inv.invoice_tax_number, inv);
+        if (inv.invoice_number && !byExternalDoc.has(inv.invoice_number)) byExternalDoc.set(inv.invoice_number, inv);
+        if (inv.bc_invoice_number) byBcNumber.set(inv.bc_invoice_number, inv);
       }
-      matched++;
 
-      const entryNoStr = String(entry.entryNo);
+      let companyMatched = 0;
+      let companyMarkedPaid = 0;
+      let companyDueDateUpdated = 0;
+      let companySkippedNoMatch = 0;
 
-      if (!entry.open) {
-        const paidAt = entry.closedAtDate || entry.postingDate;
-        const alreadyRecorded = invoice.paid_at && invoice.bc_ledger_entry_no === entryNoStr;
-        if (!alreadyRecorded) {
+      for (const entry of entries) {
+        const invoice = findInvoice(entry, byExternalDoc, byBcNumber);
+        if (!invoice) {
+          companySkippedNoMatch++;
+          continue;
+        }
+        companyMatched++;
+
+        const entryNoStr = String(entry.entryNo);
+
+        if (!entry.open) {
+          const paidAt = entry.closedAtDate || entry.postingDate;
+          const alreadyRecorded = invoice.paid_at && invoice.bc_ledger_entry_no === entryNoStr;
+          if (!alreadyRecorded) {
+            const { error } = await db
+              .from("invoices")
+              .update({
+                paid_at: paidAt,
+                payment_reference: entry.externalDocumentNo || null,
+                payment_source: "bc",
+                bc_ledger_entry_no: entryNoStr,
+              })
+              .eq("id", invoice.id);
+            if (error) throw error;
+
+            await db.from("invoice_status_history").insert({
+              invoice_id: invoice.id,
+              status: "paid",
+              changed_by: null,
+              reason: `Sincronizado desde Business Central (vendor ledger entry ${entryNoStr})`,
+            });
+            companyMarkedPaid++;
+          }
+        } else if (entry.dueDate) {
           const { error } = await db
             .from("invoices")
-            .update({
-              paid_at: paidAt,
-              payment_reference: entry.externalDocumentNo || null,
-              payment_source: "bc",
-              bc_ledger_entry_no: entryNoStr,
-            })
+            .update({ payment_due_date: entry.dueDate, payment_source: "bc", bc_ledger_entry_no: entryNoStr })
             .eq("id", invoice.id);
           if (error) throw error;
-
-          await db.from("invoice_status_history").insert({
-            invoice_id: invoice.id,
-            status: "paid",
-            changed_by: null,
-            reason: `Sincronizado desde Business Central (vendor ledger entry ${entryNoStr})`,
-          });
-          markedPaid++;
+          companyDueDateUpdated++;
         }
-      } else if (entry.dueDate) {
-        const { error } = await db
-          .from("invoices")
-          .update({ payment_due_date: entry.dueDate, payment_source: "bc", bc_ledger_entry_no: entryNoStr })
-          .eq("id", invoice.id);
-        if (error) throw error;
-        dueDateUpdated++;
       }
+
+      entriesProcessed += entries.length;
+      matched += companyMatched;
+      markedPaid += companyMarkedPaid;
+      dueDateUpdated += companyDueDateUpdated;
+      skippedNoMatch += companySkippedNoMatch;
+      perCompany.push({
+        company: company.name,
+        entriesProcessed: entries.length,
+        matched: companyMatched,
+        markedPaid: companyMarkedPaid,
+        dueDateUpdated: companyDueDateUpdated,
+        skippedNoMatch: companySkippedNoMatch,
+      });
     }
 
     await markRan(db, THROTTLE_KEY);
 
     return new Response(
-      JSON.stringify({ ok: true, entriesProcessed: entries.length, matched, markedPaid, dueDateUpdated, skippedNoMatch }),
+      JSON.stringify({ ok: true, companiesProcessed: companies.length, entriesProcessed, matched, markedPaid, dueDateUpdated, skippedNoMatch, perCompany }),
       { headers: { "Content-Type": "application/json" } },
     );
   } catch (err) {

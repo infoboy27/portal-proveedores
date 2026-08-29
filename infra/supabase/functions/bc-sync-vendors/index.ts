@@ -18,9 +18,15 @@
 //    rollout por lotes, nunca un blast.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { bcGetAll } from "../_shared/bc-client.ts";
+import { getActiveCompanies } from "../_shared/companies.ts";
 import { provisionInvitedUser } from "../_shared/provision-user.ts";
 import { markRan, shouldRun } from "../_shared/sync-throttle.ts";
 
+// MAX_INVITES_PER_RUN se mantiene como tope TOTAL de la corrida, sumando
+// las empresas que se procesen -- no un tope por empresa. Sigue siendo la
+// misma salvaguarda del incidente de 2026-08-20: nunca mandar mas de 10
+// invitaciones reales en una sola invocacion, sin importar cuantas
+// empresas se sincronicen en ese momento.
 const MAX_INVITES_PER_RUN = 10;
 const THROTTLE_KEY = "sync_vendors_interval_minutes";
 
@@ -54,13 +60,6 @@ function admin() {
   });
 }
 
-async function resolveCompanyId(db: ReturnType<typeof admin>): Promise<string> {
-  const bcCompanyId = Deno.env.get("BC_COMPANY_ID")!;
-  const { data, error } = await db.from("companies").select("id").eq("bc_code", bcCompanyId).single();
-  if (error || !data) throw new Error(`No se encontro companies.bc_code = ${bcCompanyId}: ${error?.message}`);
-  return data.id as string;
-}
-
 Deno.serve(async (req: Request) => {
   let body: SyncVendorsRequest = {};
   try {
@@ -79,87 +78,111 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    const companyId = await resolveCompanyId(db);
-    const vendors = await bcGetAll<BcVendor>("/vendors");
-    const postingSetups = await bcGetAll<BcVendorPostingSetup>("/vendorPostingSetups", "custom");
-    const postingGroupByNumber = new Map(postingSetups.map((p) => [p.number, p.vendorPostingGroup || null]));
+    const companies = await getActiveCompanies(db);
+    const siteUrl = Deno.env.get("SITE_URL") ?? undefined;
 
-    // Que vendor_number ya existian ANTES de este upsert -- se necesita
-    // saber esto antes de escribir, porque despues del upsert ya no hay
-    // forma de distinguir "nuevo" de "actualizado". Scoped por empresa
-    // (schema-v16.sql): el mismo vendor_number puede existir ya en OTRA
-    // empresa sin que eso signifique que ya existe en esta.
-    const { data: existingRows, error: existingErr } = await db
-      .from("vendors")
-      .select("vendor_number")
-      .eq("company_id", companyId);
-    if (existingErr) throw existingErr;
-    const existingNumbers = new Set((existingRows ?? []).map((r) => r.vendor_number as string));
-
-    const rows = vendors.map((v) => ({
-      vendor_number: v.number,
-      tax_registration_number: v.taxRegistrationNumber || null,
-      company_name: v.displayName,
-      email: v.email || null,
-      status: v.blocked && v.blocked.trim() !== "" ? "blocked" : "active",
-      vendor_posting_group: postingGroupByNumber.get(v.number) ?? null,
-      company_id: companyId,
-    }));
-
-    // Upsert en bloque -- una sola llamada, no una por vendor (ver
-    // incidente arriba). Requiere el indice unico de schema-v16.sql
-    // (company_id, vendor_number) -- reemplaza el indice global de
-    // schema-v8.sql, que asumia un vendor_number unico en todo el sistema.
-    const { error: upsertErr } = await db.from("vendors").upsert(rows, { onConflict: "company_id,vendor_number" });
-    if (upsertErr) throw upsertErr;
-
-    const newVendors = vendors.filter((v) => !existingNumbers.has(v.number) && v.email);
-
+    let vendorsProcessed = 0;
+    let newVendorsTotal = 0;
     let invited = 0;
     let inviteFailed = 0;
     let inviteSkippedCap = 0;
     const invitedEmails: string[] = [];
+    const perCompany: unknown[] = [];
 
-    if (inviteNewVendors) {
-      const { data: vendorIdRows, error: vendorIdErr } = await db
+    // Un throttle para toda la corrida (no uno por empresa): las empresas
+    // activas se procesan todas dentro de la misma invocacion, asi que no
+    // hay una marca de tiempo compartida que se puedan pisar entre si.
+    for (const company of companies) {
+      const vendors = await bcGetAll<BcVendor>(company.bcCompanyId, "/vendors");
+      const postingSetups = await bcGetAll<BcVendorPostingSetup>(company.bcCompanyId, "/vendorPostingSetups", "custom");
+      const postingGroupByNumber = new Map(postingSetups.map((p) => [p.number, p.vendorPostingGroup || null]));
+
+      // Que vendor_number ya existian ANTES de este upsert, DENTRO de esta
+      // empresa -- el mismo numero puede existir ya en OTRA empresa sin
+      // que eso signifique que ya existe en esta (schema-v16.sql).
+      const { data: existingRows, error: existingErr } = await db
         .from("vendors")
-        .select("id, vendor_number")
-        .in("vendor_number", newVendors.map((v) => v.number));
-      if (vendorIdErr) throw vendorIdErr;
-      const idByNumber = new Map((vendorIdRows ?? []).map((r) => [r.vendor_number as string, r.id as string]));
+        .select("vendor_number")
+        .eq("company_id", company.id);
+      if (existingErr) throw existingErr;
+      const existingNumbers = new Set((existingRows ?? []).map((r) => r.vendor_number as string));
 
-      const siteUrl = Deno.env.get("SITE_URL") ?? undefined;
-      for (const v of newVendors) {
-        if (invited >= MAX_INVITES_PER_RUN) {
-          inviteSkippedCap = newVendors.length - newVendors.indexOf(v);
-          break;
-        }
-        const vendorId = idByNumber.get(v.number);
-        if (!vendorId) continue;
+      const rows = vendors.map((v) => ({
+        vendor_number: v.number,
+        tax_registration_number: v.taxRegistrationNumber || null,
+        company_name: v.displayName,
+        email: v.email || null,
+        status: v.blocked && v.blocked.trim() !== "" ? "blocked" : "active",
+        vendor_posting_group: postingGroupByNumber.get(v.number) ?? null,
+        company_id: company.id,
+      }));
 
-        const { data: existingMapping } = await db
-          .from("user_vendor_mapping")
-          .select("user_id")
-          .eq("vendor_id", vendorId)
-          .maybeSingle();
-        if (existingMapping) continue;
+      // Upsert en bloque -- una sola llamada, no una por vendor (ver
+      // incidente arriba). Requiere el indice unico de schema-v16.sql
+      // (company_id, vendor_number).
+      const { error: upsertErr } = await db.from("vendors").upsert(rows, { onConflict: "company_id,vendor_number" });
+      if (upsertErr) throw upsertErr;
 
-        const result = await provisionInvitedUser(db, {
-          email: v.email,
-          role: "supplier",
-          companyId,
-          vendorId,
-          username: v.displayName,
-          siteUrl,
-        });
-        if (result.ok) {
-          invited++;
-          invitedEmails.push(v.email);
-        } else {
-          inviteFailed++;
-          console.error(`No se pudo invitar a ${v.email} (vendor ${v.number}): ${result.error}`);
+      const newVendors = vendors.filter((v) => !existingNumbers.has(v.number) && v.email);
+      let companyInvited = 0;
+      let companyInviteFailed = 0;
+      let companyInviteSkippedCap = 0;
+
+      if (inviteNewVendors) {
+        const { data: vendorIdRows, error: vendorIdErr } = await db
+          .from("vendors")
+          .select("id, vendor_number")
+          .eq("company_id", company.id)
+          .in("vendor_number", newVendors.map((v) => v.number));
+        if (vendorIdErr) throw vendorIdErr;
+        const idByNumber = new Map((vendorIdRows ?? []).map((r) => [r.vendor_number as string, r.id as string]));
+
+        for (const v of newVendors) {
+          if (invited >= MAX_INVITES_PER_RUN) {
+            companyInviteSkippedCap = newVendors.length - newVendors.indexOf(v);
+            break;
+          }
+          const vendorId = idByNumber.get(v.number);
+          if (!vendorId) continue;
+
+          const { data: existingMapping } = await db
+            .from("user_vendor_mapping")
+            .select("user_id")
+            .eq("vendor_id", vendorId)
+            .maybeSingle();
+          if (existingMapping) continue;
+
+          const result = await provisionInvitedUser(db, {
+            email: v.email,
+            role: "supplier",
+            companyId: company.id,
+            vendorId,
+            username: v.displayName,
+            siteUrl,
+          });
+          if (result.ok) {
+            invited++;
+            companyInvited++;
+            invitedEmails.push(v.email);
+          } else {
+            inviteFailed++;
+            companyInviteFailed++;
+            console.error(`No se pudo invitar a ${v.email} (vendor ${v.number}, empresa ${company.name}): ${result.error}`);
+          }
         }
       }
+
+      vendorsProcessed += vendors.length;
+      newVendorsTotal += newVendors.length;
+      inviteSkippedCap += companyInviteSkippedCap;
+      perCompany.push({
+        company: company.name,
+        vendorsProcessed: vendors.length,
+        newVendors: newVendors.length,
+        invited: companyInvited,
+        inviteFailed: companyInviteFailed,
+        inviteSkippedCap: companyInviteSkippedCap,
+      });
     }
 
     await markRan(db, THROTTLE_KEY);
@@ -167,14 +190,16 @@ Deno.serve(async (req: Request) => {
     return new Response(
       JSON.stringify({
         ok: true,
-        vendorsProcessed: vendors.length,
-        newVendors: newVendors.length,
+        companiesProcessed: companies.length,
+        vendorsProcessed,
+        newVendors: newVendorsTotal,
         inviteNewVendors,
         invited,
         invitedEmails,
         inviteFailed,
         inviteSkippedCap,
         maxInvitesPerRun: MAX_INVITES_PER_RUN,
+        perCompany,
       }),
       { headers: { "Content-Type": "application/json" } },
     );

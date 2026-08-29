@@ -1,8 +1,17 @@
 // Cliente minimo para Business Central API v2.0 (OAuth2 client-credentials).
-// Credenciales via env (BC_TENANT_ID/BC_CLIENT_ID/BC_CLIENT_SECRET/BC_ENVIRONMENT/
-// BC_COMPANY_ID), inyectadas al contenedor de Edge Functions desde
+// Credenciales via env (BC_TENANT_ID/BC_CLIENT_ID/BC_CLIENT_SECRET/BC_ENVIRONMENT),
+// inyectadas al contenedor de Edge Functions desde
 // supabase/docker-compose.override.yml -> supabase/.env (nunca versionadas).
 // Validado en vivo contra el sandbox Test672026 — ver plan Fase A.
+//
+// Multiempresa (Fase 2, 2026-08-29): el tenant/credenciales de Azure AD son
+// compartidos entre TODAS las empresas del entorno (confirmado en vivo: un
+// solo token listo las 15 empresas y sus proveedores sin pedir nada
+// distinto por empresa) -- lo unico que cambia entre empresas es el GUID
+// que va en la URL (/companies(id)/...). Por eso BC_COMPANY_ID dejo de ser
+// variable de entorno: cada funcion que llama a este cliente ahora pasa el
+// GUID de la empresa (companies.bc_code en Supabase) como primer argumento
+// de cada llamada, en vez de que el cliente lo lea fijo del proceso.
 
 interface TokenCache {
   accessToken: string;
@@ -59,8 +68,8 @@ function baseUrl(api: BcApi = "standard"): string {
   return `https://api.businesscentral.dynamics.com/v2.0/${tenantId}/${environment}/${apiPath}`;
 }
 
-function companyPath(path: string): string {
-  const companyId = requireEnv("BC_COMPANY_ID");
+function companyPath(companyId: string, path: string): string {
+  if (!companyId) throw new Error("companyId vacio -- falta el GUID de la empresa en BC (companies.bc_code)");
   return `/companies(${companyId})${path}`;
 }
 
@@ -76,18 +85,18 @@ async function bcFetch(path: string, api: BcApi = "standard", init: RequestInit 
   return res;
 }
 
-export async function bcGet<T>(path: string, api: BcApi = "standard"): Promise<T> {
-  const res = await bcFetch(companyPath(path), api);
+export async function bcGet<T>(companyId: string, path: string, api: BcApi = "standard"): Promise<T> {
+  const res = await bcFetch(companyPath(companyId, path), api);
   if (!res.ok) {
-    throw new Error(`BC GET ${path} -> HTTP ${res.status} ${await res.text()}`);
+    throw new Error(`BC GET ${path} (empresa ${companyId}) -> HTTP ${res.status} ${await res.text()}`);
   }
   return (await res.json()) as T;
 }
 
 // Sigue @odata.nextLink hasta agotar las paginas — necesario porque BC pagina
 // resultados por defecto (ej. purchaseOrders con muchas filas).
-export async function bcGetAll<T>(path: string, api: BcApi = "standard"): Promise<T[]> {
-  let url: string | null = `${baseUrl(api)}${companyPath(path)}`;
+export async function bcGetAll<T>(companyId: string, path: string, api: BcApi = "standard"): Promise<T[]> {
+  let url: string | null = `${baseUrl(api)}${companyPath(companyId, path)}`;
   const results: T[] = [];
   while (url) {
     const token = await getAccessToken();
@@ -102,14 +111,14 @@ export async function bcGetAll<T>(path: string, api: BcApi = "standard"): Promis
   return results;
 }
 
-export async function bcPost<T>(path: string, body: unknown, api: BcApi = "standard"): Promise<T> {
-  const res = await bcFetch(companyPath(path), api, {
+export async function bcPost<T>(companyId: string, path: string, body: unknown, api: BcApi = "standard"): Promise<T> {
+  const res = await bcFetch(companyPath(companyId, path), api, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new Error(`BC POST ${path} -> HTTP ${res.status} ${await res.text()}`);
+    throw new Error(`BC POST ${path} (empresa ${companyId}) -> HTTP ${res.status} ${await res.text()}`);
   }
   return (await res.json()) as T;
 }
@@ -117,14 +126,14 @@ export async function bcPost<T>(path: string, body: unknown, api: BcApi = "stand
 // If-Match: "*" evita tener que leer el @odata.etag actual antes de escribir
 // (mismo truco que ya usa bcAttachFile) — aceptable aqui porque nunca hay
 // escrituras concurrentes sobre la misma factura recien creada.
-export async function bcPatch<T>(path: string, body: unknown, api: BcApi = "standard"): Promise<T> {
-  const res = await bcFetch(companyPath(path), api, {
+export async function bcPatch<T>(companyId: string, path: string, body: unknown, api: BcApi = "standard"): Promise<T> {
+  const res = await bcFetch(companyPath(companyId, path), api, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", "If-Match": "*" },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new Error(`BC PATCH ${path} -> HTTP ${res.status} ${await res.text()}`);
+    throw new Error(`BC PATCH ${path} (empresa ${companyId}) -> HTTP ${res.status} ${await res.text()}`);
   }
   return (await res.json()) as T;
 }
@@ -134,18 +143,23 @@ export async function bcPatch<T>(path: string, body: unknown, api: BcApi = "stan
 // confirmado en sandbox via el mediaEditLink devuelto por el registro creado
 // — la API v2.0 NO usa "/content" como en otras APIs OData de BC).
 export async function bcAttachFile(
+  companyId: string,
   parentPath: string,
   fileName: string,
   bytes: Uint8Array,
   contentType: string,
 ): Promise<{ id: string }> {
-  const created = await bcPost<{ id: string }>(`${parentPath}/attachments`, { fileName });
+  const created = await bcPost<{ id: string }>(companyId, `${parentPath}/attachments`, { fileName });
 
-  const res = await bcFetch(companyPath(`${parentPath}/attachments(${created.id})/attachmentContent`), "standard", {
-    method: "PATCH",
-    headers: { "Content-Type": contentType, "If-Match": "*" },
-    body: bytes,
-  });
+  const res = await bcFetch(
+    companyPath(companyId, `${parentPath}/attachments(${created.id})/attachmentContent`),
+    "standard",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": contentType, "If-Match": "*" },
+      body: bytes,
+    },
+  );
   if (!res.ok) {
     throw new Error(`BC attachment content PATCH -> HTTP ${res.status} ${await res.text()}`);
   }

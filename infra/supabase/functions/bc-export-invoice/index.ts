@@ -69,6 +69,19 @@ Deno.serve(async (req: Request) => {
       .single();
     if (orderErr || !order) throw new Error(`Orden de compra no encontrada: ${orderErr?.message}`);
 
+    // Multiempresa (Fase 2, 2026-08-29): el GUID real de la empresa en BC
+    // ya no viene de una variable de entorno fija -- se resuelve a partir
+    // de la empresa de la orden (order.company_id), via companies.bc_code.
+    const { data: companyRow, error: companyErr } = await db
+      .from("companies")
+      .select("bc_code")
+      .eq("id", order.company_id)
+      .single();
+    if (companyErr || !companyRow?.bc_code) {
+      throw new Error(`No se encontro el codigo de BC para la empresa de la orden: ${companyErr?.message}`);
+    }
+    const bcCompanyId = companyRow.bc_code as string;
+
     if (!order.bc_id) {
       await markError(
         db,
@@ -96,7 +109,7 @@ Deno.serve(async (req: Request) => {
     // puede setear en la creacion. El vinculo con la orden se logra copiando
     // vendor + lineas de la PO (paso 2), que es la "plantilla" que pide el
     // cliente, aunque el campo interno orderId del header quede vacio.
-    const created = await bcPost<{ id: string; number: string }>("/purchaseInvoices", {
+    const created = await bcPost<{ id: string; number: string }>(bcCompanyId, "/purchaseInvoices", {
       vendorNumber: vendor.vendor_number,
       invoiceDate: invoice.invoice_date,
       postingDate: invoice.invoice_date,
@@ -113,7 +126,7 @@ Deno.serve(async (req: Request) => {
     let copiedLines = 0;
     for (const line of lines ?? []) {
       if (!line.bc_line_type || !line.bc_line_object_number) continue;
-      await bcPost(`/purchaseInvoices(${created.id})/purchaseInvoiceLines`, {
+      await bcPost(bcCompanyId, `/purchaseInvoices(${created.id})/purchaseInvoiceLines`, {
         lineType: line.bc_line_type,
         lineObjectNumber: line.bc_line_object_number,
         description: line.description,
@@ -150,6 +163,7 @@ Deno.serve(async (req: Request) => {
     }
     if (invoice.invoice_tax_number) {
       await bcPatch(
+        bcCompanyId,
         `/purchaseInvoiceFiscals(${created.id})`,
         { fiscalDocumentNo: invoice.invoice_tax_number },
         "custom",
@@ -171,7 +185,7 @@ Deno.serve(async (req: Request) => {
       const { data: fileBlob, error: downloadErr } = await db.storage.from("invoices").download(invoice.file_path);
       if (downloadErr) throw new Error(`No se pudo leer el PDF de Storage: ${downloadErr.message}`);
       const bytes = new Uint8Array(await fileBlob.arrayBuffer());
-      await bcAttachFile(`/purchaseInvoices(${created.id})`, invoice.filename ?? "factura.pdf", bytes, "application/pdf");
+      await bcAttachFile(bcCompanyId, `/purchaseInvoices(${created.id})`, invoice.filename ?? "factura.pdf", bytes, "application/pdf");
       attached = true;
     }
 
