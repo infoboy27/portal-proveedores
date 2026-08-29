@@ -1520,3 +1520,49 @@ errores). Verificado que el bundle trae las cadenas nuevas ("Selecciona la
 orden de compra", "Ya facturado", "Sin orden de compra"). Confirmado en
 producción que hay 15 órdenes reales en estado `open` — el selector tiene
 datos reales que mostrar, no es solo teórico.
+
+---
+
+## 2026-08-29 — QA exhaustivo de Fase 1-4 + bug real encontrado y corregido
+
+**Contexto:** a pedido de Jonatan ("has todas las pruebas desde cero para ir
+mirandolas"), se corrió `/qa` de forma exhaustiva sobre las Fases 1-4 —
+17 casos de prueba individuales contra producción real (no simulados), cada
+uno con captura de pantalla, subiendo PDFs y una foto JPG reales.
+
+**Bug encontrado (severidad alta):** el popup de "Exportar ahora"
+(`Exports.tsx`, construido en la Fase 1 de esta misma sesión) mostraba el
+mensaje genérico "Edge Function returned a non-2xx status code" en vez del
+motivo real del error ("Sin orden de compra vinculada", etc.). Causa raíz:
+`supabase-js` (`functions.invoke()`) nunca parsea el cuerpo JSON de una
+respuesta HTTP no-2xx — lo envuelve en un `FunctionsHttpError` genérico; el
+mensaje real vive en `error.context` (el `Response` crudo) y hay que leerlo
+a mano con `.json()`. Como `bc-export-invoice` reporta **todos** sus errores
+de negocio (orden sin vincular, sin `bc_id`, sin NCF, fallo de BC, etc.) con
+status no-2xx, el popup nunca mostró el motivo real para ningún fallo —
+solo parecía funcionar en los QA anteriores porque esos solo probaron el
+camino exitoso.
+
+**Autocorrección durante el fix:** el primer intento de arreglo tenía su
+propio bug — el `throw new Error(body.error)` quedó dentro del mismo `try`
+cuyo `catch` lo silenciaba, así que seguía sin mostrar el mensaje real tras
+el primer redeploy. Se diagnosticó inyectando un hook de `window.fetch` en
+la página real para confirmar que la respuesta HTTP cruda ya traía el
+mensaje correcto (`422`, `{"ok":false,"error":"Sin orden de compra
+vinculada"}`), lo que aisló el bug al código cliente y no a la Edge
+Function. Corregido separando el parseo (dentro de `try/catch`) del `throw`
+(fuera de el).
+
+**Verificado tras el fix (regresión):** se re-probó el camino de
+exportación exitosa completo (proveedor sin NCF, con orden real, PDF
+adjunto) para confirmar que el fix no rompió nada — creó
+`CF-001929` en Business Central correctamente.
+
+**Los otros 16 casos de prueba pasaron sin hallazgos**, incluyendo un caso
+de borde nuevo no cubierto en QA anteriores: una orden ya facturada al
+100% de su presupuesto, donde el guardia de acumulado de la Fase 2 sigue
+bloqueando correctamente cualquier monto adicional.
+
+**Desplegado**: `docker compose build app && up -d` (dos veces — el primer
+intento de fix, luego la corrección real). Reporte completo en
+`.gstack/qa-reports/qa-report-proveedores-jfmcss-com-2026-08-29.md`.

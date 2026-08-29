@@ -259,7 +259,28 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     const { data, error } = await supabase.functions.invoke("bc-export-invoice", {
       body: { invoiceId, changedBy },
     });
-    if (error) throw error;
+    if (error) {
+      // Encontrado en /qa 2026-08-29: cuando la Edge Function responde con un
+      // status no-2xx (422/500, que es como bc-export-invoice reporta TODOS
+      // sus errores de negocio -- orden sin vincular, sin bc_id, sin NCF,
+      // fallo de BC, etc.), supabase-js NUNCA parsea el cuerpo JSON de la
+      // respuesta -- error.message queda en el generico "Edge Function
+      // returned a non-2xx status code" y el mensaje real (`{ok:false,
+      // error:"..."}`) se pierde. El popup de "Exportar ahora" mostraba ese
+      // generico en vez del motivo real. El cuerpo real esta en
+      // error.context (el Response crudo), asi que hay que leerlo a mano.
+      const context = (error as { context?: Response }).context;
+      let parsedMessage: string | null = null;
+      if (context) {
+        try {
+          const body = await context.clone().json();
+          if (body?.error) parsedMessage = body.error as string;
+        } catch {
+          // el cuerpo no era JSON parseable -- cae al error generico de abajo
+        }
+      }
+      throw parsedMessage ? new Error(parsedMessage) : error;
+    }
     if (!data?.ok) throw new Error(data?.error ?? "La exportacion a Business Central fallo");
     await get().fetchAll();
     return { bcInvoiceNumber: data.bcInvoiceNumber as string, attached: !!data.attached };
