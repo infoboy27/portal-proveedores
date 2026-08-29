@@ -1566,3 +1566,70 @@ bloqueando correctamente cualquier monto adicional.
 **Desplegado**: `docker compose build app && up -d` (dos veces — el primer
 intento de fix, luego la corrección real). Reporte completo en
 `.gstack/qa-reports/qa-report-proveedores-jfmcss-com-2026-08-29.md`.
+
+---
+
+## 2026-08-29 (continuación) — Multiempresa: Fase 1 (fundamento de esquema)
+
+**Contexto:** Jonatan preguntó si el portal puede manejar las demás empresas
+que Adsemble tiene en Business Central. Se consultó el tenant real de BC
+(`Test672026`) en vivo, no documentación: 15 empresas en el entorno, cada
+una con su propia tabla de proveedores completamente aislada (BC no
+comparte maestro de proveedores entre empresas). 11 de esas 15 empresas
+comparten hoy el mismo listado de proveedores que Adsemble (mismo
+`PROV-000001` = "REVESTIDA SRL" en las 11) — evidencia de que el sandbox se
+armó copiando la data de Adsemble varias veces. Jonatan confirmó el alcance:
+**las 11 empresas con listado compartido**, excluyendo LIQUID INC (proveedores
+propios y distintos), Empresa Modelo (plantilla demo de Microsoft) y
+Evolutier/Evolutier SRL (sin datos). Se armó un plan de 6 fases (artefacto
+publicado) y se aprobó arrancar por la Fase 1.
+
+**Diagnóstico que definió el trabajo:** `vendors` no tenía NINGUNA columna
+de empresa — lista global plana. Sin esto, el mismo `vendor_number` en dos
+empresas distintas se habría mezclado en un solo registro del portal en
+cuanto se conectara la segunda empresa — y con 11 empresas compartiendo
+numeración hoy, era garantía de que iba a pasar, no un riesgo hipotético.
+
+**Implementado (`schema-v16.sql`):**
+1. `vendors.company_id` (NOT NULL, FK a `companies`) — backfill a Adsemble
+   para las 3,495 filas existentes (3,494 sincronizadas de BC + el
+   proveedor de prueba manual "Suplidor de Prueba"), única empresa
+   conectada hasta ahora.
+2. Reemplazado el índice único global `vendors_vendor_number_uq`
+   (schema-v8.sql, del incidente de invitaciones masivas) por
+   `vendors_company_vendor_number_uq` en `(company_id, vendor_number)` —
+   el mismo número ya es legítimamente distinto entre empresas.
+3. **`companies` no necesitó ningún cambio de esquema**: `bc_code` ya
+   guarda el GUID real de la empresa en BC (confirmado: la fila de Adsemble
+   tiene `bc_code` = el mismo valor que `BC_COMPANY_ID`), y `disabled_at`
+   ya sirve como flag activa/inactiva. Las filas de las otras 10 empresas
+   en alcance se agregan en la Fase 2, junto con el loop de sincronización
+   real — no tenía sentido que aparecieran en el portal antes de que el
+   backend pudiera procesarlas.
+
+**Código corregido (los únicos 2 lugares que escriben en `vendors`):**
+- `bc-sync-orders/resolveVendorId`: matcheaba/creaba proveedores solo por
+  `vendor_number`. Ahora matchea por `(vendor_number, company_id)` y
+  guarda `company_id` al crear uno nuevo.
+- `bc-sync-vendors`: el upsert en bloque ahora incluye `company_id` en
+  cada fila y usa `onConflict: "company_id,vendor_number"` (antes
+  `"vendor_number"` solo). El chequeo de "cuáles ya existían" (para no
+  invitar de nuevo a proveedores ya conocidos) ahora también filtra por
+  `company_id` — antes habría marcado como "ya existente" a un proveedor
+  de otra empresa con el mismo número.
+
+**Verificado en vivo tras desplegar:** corridas reales de ambas funciones
+contra Adsemble — `bc-sync-vendors` procesó 3,494 proveedores sin error de
+conflicto (confirma que el nuevo índice funciona con el upsert),
+`bc-sync-orders` procesó 15 órdenes / 27 líneas sin error. Después de
+ambas corridas: 3,495 filas en `vendors` (sin cambio, cero duplicados
+creados), 0 filas con `company_id` nulo, sin `vendor_number` repetidos.
+
+**Alcance de esta fase, a propósito:** no se tocó `bc-client.ts` (sigue
+leyendo una sola empresa por variable de entorno), no se agregaron las
+otras 10 empresas a `companies`, no se tocó login/RLS/frontend. Eso es
+Fase 2 en adelante — la Fase 1 solo garantiza que el esquema y los 2
+escritores existentes ya no rompan cuando se conecte la segunda empresa.
+
+**Desplegado**: `psql` (schema-v16.sql) + restart `rest`; `docker compose
+restart functions` (bc-sync-orders, bc-sync-vendors).

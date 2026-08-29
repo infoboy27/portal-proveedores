@@ -51,13 +51,24 @@ async function resolveCompanyId(db: ReturnType<typeof admin>): Promise<string> {
   return data.id as string;
 }
 
-async function resolveVendorId(db: ReturnType<typeof admin>, order: BcPurchaseOrder): Promise<string> {
-  const { data: existing } = await db.from("vendors").select("id").eq("vendor_number", order.vendorNumber).maybeSingle();
+// Matchea/crea el vendor DENTRO de la empresa (company_id), no solo por
+// numero -- el mismo vendor_number existe legitimamente en varias empresas
+// de BC (confirmado en vivo: PROV-000001 = REVESTIDA SRL en 11 empresas
+// distintas del tenant). Antes de schema-v16.sql esto matcheaba solo por
+// vendor_number y habria mezclado ordenes de dos empresas contra un mismo
+// vendor del portal en cuanto se conectara la segunda.
+async function resolveVendorId(db: ReturnType<typeof admin>, order: BcPurchaseOrder, companyId: string): Promise<string> {
+  const { data: existing } = await db
+    .from("vendors")
+    .select("id")
+    .eq("vendor_number", order.vendorNumber)
+    .eq("company_id", companyId)
+    .maybeSingle();
   if (existing) return existing.id as string;
 
   const { data: created, error } = await db
     .from("vendors")
-    .insert({ vendor_number: order.vendorNumber, company_name: order.vendorName, status: "active" })
+    .insert({ vendor_number: order.vendorNumber, company_name: order.vendorName, status: "active", company_id: companyId })
     .select("id")
     .single();
   if (error || !created) throw new Error(`No se pudo crear vendor ${order.vendorNumber}: ${error?.message}`);
@@ -94,7 +105,7 @@ Deno.serve(async () => {
         skippedDrafts++;
         continue;
       }
-      const vendorId = await resolveVendorId(db, order);
+      const vendorId = await resolveVendorId(db, order, companyId);
 
       const { data: existingOrder } = await db.from("purchase_orders").select("id").eq("bc_id", order.id).maybeSingle();
 

@@ -86,8 +86,13 @@ Deno.serve(async (req: Request) => {
 
     // Que vendor_number ya existian ANTES de este upsert -- se necesita
     // saber esto antes de escribir, porque despues del upsert ya no hay
-    // forma de distinguir "nuevo" de "actualizado".
-    const { data: existingRows, error: existingErr } = await db.from("vendors").select("vendor_number");
+    // forma de distinguir "nuevo" de "actualizado". Scoped por empresa
+    // (schema-v16.sql): el mismo vendor_number puede existir ya en OTRA
+    // empresa sin que eso signifique que ya existe en esta.
+    const { data: existingRows, error: existingErr } = await db
+      .from("vendors")
+      .select("vendor_number")
+      .eq("company_id", companyId);
     if (existingErr) throw existingErr;
     const existingNumbers = new Set((existingRows ?? []).map((r) => r.vendor_number as string));
 
@@ -98,11 +103,14 @@ Deno.serve(async (req: Request) => {
       email: v.email || null,
       status: v.blocked && v.blocked.trim() !== "" ? "blocked" : "active",
       vendor_posting_group: postingGroupByNumber.get(v.number) ?? null,
+      company_id: companyId,
     }));
 
     // Upsert en bloque -- una sola llamada, no una por vendor (ver
-    // incidente arriba). Requiere el indice unico de schema-v8.sql.
-    const { error: upsertErr } = await db.from("vendors").upsert(rows, { onConflict: "vendor_number" });
+    // incidente arriba). Requiere el indice unico de schema-v16.sql
+    // (company_id, vendor_number) -- reemplaza el indice global de
+    // schema-v8.sql, que asumia un vendor_number unico en todo el sistema.
+    const { error: upsertErr } = await db.from("vendors").upsert(rows, { onConflict: "company_id,vendor_number" });
     if (upsertErr) throw upsertErr;
 
     const newVendors = vendors.filter((v) => !existingNumbers.has(v.number) && v.email);
