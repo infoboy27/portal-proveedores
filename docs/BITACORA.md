@@ -1694,3 +1694,70 @@ Login/RLS/frontend (Fases 3-6 del plan) siguen sin tocar.
 **Desplegado**: `psql` (schema-v17.sql); `docker compose restart
 functions` (bc-client.ts, companies.ts, las 4 funciones de sync,
 bc-export-invoice).
+
+---
+
+## 2026-08-29 (continuación) — Multiempresa: Fase 3 (login/identidad multiempresa)
+
+**Decision de Jonatan:** una sola cuenta de portal por proveedor real,
+aunque le facture a varias empresas -- el vinculo entre empresas se
+agrega **automatico, sin aprobacion manual** cuando se detecta el mismo
+RNC en otra empresa (mas rapido para el proveedor; el riesgo es menor que
+el incidente del 20 de agosto porque esto nunca manda correo ni crea
+usuario nuevo, solo agrega una fila de acceso a una cuenta que ya existe
+y ya fue verificada al invitarla la primera vez).
+
+**Implementado:**
+
+1. **`bc-sync-vendors` — auto-vinculo por RNC.** Cuando un proveedor
+   recien creado en una empresa comparte RNC con un proveedor de OTRA
+   empresa que ya tiene cuenta de portal, se agrega una fila en
+   `user_vendor_mapping` (mismo usuario, nueva empresa/vendor_id) --
+   nunca se manda correo ni se crea usuario. Si el RNC coincide con
+   **mas de una** cuenta distinta (dato inconsistente real, ej. dos
+   personas con el mismo RNC por error de captura), no se adivina: se
+   deja sin vincular y se loguea para revision manual.
+2. **`resolve-login-identifier`** dejo de asumir "un RNC = un vendor" en
+   todo el sistema. Ahora busca TODAS las filas de `vendors` con ese RNC
+   (una por empresa), junta los usuarios primarios mapeados a cualquiera
+   de ellas, y solo entra si hay exactamente UN usuario distinto. Si hay
+   mas de uno, rechaza con el mismo mensaje generico de siempre (no
+   revela la ambiguedad al cliente) mientras loguea el conflicto
+   server-side para que un admin lo revise.
+
+**Bug real encontrado y corregido en el camino:** `.in(col, [...])` de
+supabase-js codifica la lista como query string en la URL -- con una
+empresa grande (~3,400 vendor_number nuevos de una vez, el caso normal al
+activar una empresa por primera vez) la URL supera el limite del proxy y
+responde "414 URI too long" en vez del error real. El mismo patron sin
+batch ya existia en el bloque de invitaciones (`vendorIdRows`), pero
+nunca habia corrido con una empresa grande antes de esta fase. Corregido
+con batches de 200 en los 4 `.in()` de la funcion.
+
+**Verificado en vivo, los 3 escenarios reales:**
+- Activando JUAN FABIAN (nunca sincronizada, ~3,472 proveedores nuevos)
+  sin ningun RNC compartido con cuenta existente: `autoLinked: 0`, sin
+  error -- confirma que el fix del URI-too-long realmente resolvio el
+  bug (antes de corregirlo, esta misma corrida fallaba).
+- Caso montado a proposito: se le dio a Adsemble/PROV-000001 una cuenta
+  de prueba, se borro su fila equivalente en JUAN FABIAN (para que
+  volviera a verse "nueva"), se re-corrio el sync -> `autoLinked: 1`,
+  confirmado en la base que la fila nueva de JUAN FABIAN quedo mapeada a
+  la MISMA cuenta. `resolve-login-identifier` con ese RNC devolvio el
+  correo correcto.
+- Caso ambiguo montado a proposito: se agrego una SEGUNDA cuenta distinta
+  al mismo RNC (en DUCKTAPE) -- `resolve-login-identifier` rechazo con el
+  mensaje generico de siempre (no version distinta que revele el
+  conflicto) y quedo el log server-side: "RNC ...: 2 cuentas de portal
+  distintas mapeadas -- login ambiguo, revisar user_vendor_mapping".
+- Toda la data de estas pruebas montadas se borro despues; JUAN FABIAN
+  volvio a quedar deshabilitada. Solo Adsemble sigue activa en
+  produccion, igual que antes de esta fase.
+
+**Pendiente, a proposito:** Fases 4-6 del plan (RLS multiempresa real,
+selector de empresa en el frontend, columna "Empresa" en las vistas de
+admin) siguen sin tocar -- hoy con una sola empresa activa no hacen
+falta todavia.
+
+**Desplegado**: `docker compose restart functions` (bc-sync-vendors,
+resolve-login-identifier).

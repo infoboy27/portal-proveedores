@@ -60,6 +60,20 @@ function admin() {
   });
 }
 
+// PostgREST codifica ".in(col, [...])" como query string en la URL
+// (?col=in.(a,b,c,...)) -- con miles de valores (una empresa grande tiene
+// ~3,400 vendor_number) la URL supera el limite del proxy y responde "414
+// URI too long" en vez del error real de la consulta. Encontrado en vivo
+// 2026-08-29 activando JUAN FABIAN (nunca sincronizada, ~3,400 vendors
+// nuevos de una vez) -- el mismo patron sin batch ya existia en el bloque
+// de invitaciones, solo que nunca corrio con una empresa grande antes.
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
+}
+const IN_BATCH_SIZE = 200;
+
 Deno.serve(async (req: Request) => {
   let body: SyncVendorsRequest = {};
   try {
@@ -83,6 +97,7 @@ Deno.serve(async (req: Request) => {
 
     let vendorsProcessed = 0;
     let newVendorsTotal = 0;
+    let autoLinkedTotal = 0;
     let invited = 0;
     let inviteFailed = 0;
     let inviteSkippedCap = 0;
@@ -123,19 +138,113 @@ Deno.serve(async (req: Request) => {
       const { error: upsertErr } = await db.from("vendors").upsert(rows, { onConflict: "company_id,vendor_number" });
       if (upsertErr) throw upsertErr;
 
+      // Auto-vinculo por RNC (Fase 3, 2026-08-29 -- decision de Jonatan:
+      // automatico, sin aprobacion manual). Si un proveedor recien creado
+      // en ESTA empresa comparte RNC con un proveedor de OTRA empresa que
+      // YA tiene cuenta de portal, se agrega esta empresa a esa MISMA
+      // cuenta -- no se crea usuario nuevo ni se manda correo, solo una
+      // fila mas en user_vendor_mapping. Es la mitad "una cuenta, varias
+      // empresas" de resolve-login-identifier. Si el RNC coincide con MAS
+      // de una cuenta distinta (dato inconsistente real), no se adivina --
+      // se deja sin vincular y se loguea para revision manual.
+      let companyAutoLinked = 0;
+      const newlyCreatedNumbers = new Set(vendors.filter((v) => !existingNumbers.has(v.number)).map((v) => v.number));
+      if (newlyCreatedNumbers.size > 0) {
+        const newRowsWithDigits: { id: string; vendor_number: string; tax_registration_number_digits: string | null }[] = [];
+        for (const batch of chunk(Array.from(newlyCreatedNumbers), IN_BATCH_SIZE)) {
+          const { data, error } = await db
+            .from("vendors")
+            .select("id, vendor_number, tax_registration_number_digits")
+            .eq("company_id", company.id)
+            .in("vendor_number", batch);
+          if (error) throw error;
+          newRowsWithDigits.push(...(data ?? []));
+        }
+
+        const digitsToLink = Array.from(
+          new Set(newRowsWithDigits.map((r) => r.tax_registration_number_digits).filter((d): d is string => !!d)),
+        );
+
+        if (digitsToLink.length > 0) {
+          const otherVendors: { id: string; tax_registration_number_digits: string | null }[] = [];
+          for (const batch of chunk(digitsToLink, IN_BATCH_SIZE)) {
+            const { data, error } = await db
+              .from("vendors")
+              .select("id, tax_registration_number_digits")
+              .neq("company_id", company.id)
+              .in("tax_registration_number_digits", batch);
+            if (error) throw error;
+            otherVendors.push(...(data ?? []));
+          }
+
+          if (otherVendors.length > 0) {
+            const otherMappings: { vendor_id: string; user_id: string }[] = [];
+            for (const batch of chunk(otherVendors.map((v) => v.id), IN_BATCH_SIZE)) {
+              const { data, error } = await db
+                .from("user_vendor_mapping")
+                .select("vendor_id, user_id")
+                .in("vendor_id", batch)
+                .eq("is_primary", true);
+              if (error) throw error;
+              otherMappings.push(...(data ?? []));
+            }
+
+            const userIdByVendorId = new Map((otherMappings ?? []).map((m) => [m.vendor_id as string, m.user_id as string]));
+            const usersByDigits = new Map<string, Set<string>>();
+            for (const ov of otherVendors) {
+              const uid = userIdByVendorId.get(ov.id as string);
+              if (!uid) continue;
+              const digits = ov.tax_registration_number_digits as string;
+              if (!usersByDigits.has(digits)) usersByDigits.set(digits, new Set());
+              usersByDigits.get(digits)!.add(uid);
+            }
+
+            const linkRows: { user_id: string; vendor_id: string; company_id: string; is_primary: boolean }[] = [];
+            for (const nr of newRowsWithDigits ?? []) {
+              const digits = nr.tax_registration_number_digits as string | null;
+              if (!digits) continue;
+              const candidateUsers = usersByDigits.get(digits);
+              if (!candidateUsers || candidateUsers.size === 0) continue;
+              if (candidateUsers.size > 1) {
+                console.error(
+                  `RNC ${digits}: ${candidateUsers.size} cuentas de portal distintas en otras empresas -- no se auto-vincula ${nr.vendor_number} (empresa ${company.name}), revisar manualmente`,
+                );
+                continue;
+              }
+              linkRows.push({
+                user_id: Array.from(candidateUsers)[0],
+                vendor_id: nr.id as string,
+                company_id: company.id,
+                is_primary: true,
+              });
+            }
+
+            if (linkRows.length > 0) {
+              const { error: linkErr } = await db.from("user_vendor_mapping").insert(linkRows);
+              if (linkErr) throw linkErr;
+              companyAutoLinked = linkRows.length;
+            }
+          }
+        }
+      }
+
       const newVendors = vendors.filter((v) => !existingNumbers.has(v.number) && v.email);
       let companyInvited = 0;
       let companyInviteFailed = 0;
       let companyInviteSkippedCap = 0;
 
       if (inviteNewVendors) {
-        const { data: vendorIdRows, error: vendorIdErr } = await db
-          .from("vendors")
-          .select("id, vendor_number")
-          .eq("company_id", company.id)
-          .in("vendor_number", newVendors.map((v) => v.number));
-        if (vendorIdErr) throw vendorIdErr;
-        const idByNumber = new Map((vendorIdRows ?? []).map((r) => [r.vendor_number as string, r.id as string]));
+        const vendorIdRows: { id: string; vendor_number: string }[] = [];
+        for (const batch of chunk(newVendors.map((v) => v.number), IN_BATCH_SIZE)) {
+          const { data, error } = await db
+            .from("vendors")
+            .select("id, vendor_number")
+            .eq("company_id", company.id)
+            .in("vendor_number", batch);
+          if (error) throw error;
+          vendorIdRows.push(...(data ?? []));
+        }
+        const idByNumber = new Map(vendorIdRows.map((r) => [r.vendor_number, r.id]));
 
         for (const v of newVendors) {
           if (invited >= MAX_INVITES_PER_RUN) {
@@ -174,11 +283,13 @@ Deno.serve(async (req: Request) => {
 
       vendorsProcessed += vendors.length;
       newVendorsTotal += newVendors.length;
+      autoLinkedTotal += companyAutoLinked;
       inviteSkippedCap += companyInviteSkippedCap;
       perCompany.push({
         company: company.name,
         vendorsProcessed: vendors.length,
         newVendors: newVendors.length,
+        autoLinked: companyAutoLinked,
         invited: companyInvited,
         inviteFailed: companyInviteFailed,
         inviteSkippedCap: companyInviteSkippedCap,
@@ -193,6 +304,7 @@ Deno.serve(async (req: Request) => {
         companiesProcessed: companies.length,
         vendorsProcessed,
         newVendors: newVendorsTotal,
+        autoLinked: autoLinkedTotal,
         inviteNewVendors,
         invited,
         invitedEmails,

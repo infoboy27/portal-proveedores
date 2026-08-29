@@ -38,8 +38,13 @@ Deno.serve(async (req: Request) => {
     });
   }
 
-  // RNC/cedula: normaliza quitando guiones/espacios, busca el vendor por
-  // ese numero, y el usuario proveedor primario mapeado a ese vendor.
+  // RNC/cedula: normaliza quitando guiones/espacios, busca TODOS los
+  // vendors con ese numero (multiempresa, 2026-08-29: el mismo RNC real
+  // ahora puede tener una fila de vendor distinta POR EMPRESA -- ya no es
+  // uno solo en todo el sistema, confirmado en vivo: 11 empresas comparten
+  // RNCs hoy), y de ahi el usuario proveedor primario mapeado a
+  // cualquiera de esas filas -- deberia ser el mismo usuario en todas
+  // (una cuenta, varias empresas, ver provision-user.ts/autoLinkByTaxId).
   //
   // Se compara contra tax_registration_number_digits (columna generada,
   // schema-v13.sql) y no contra tax_registration_number crudo -- BC guarda
@@ -51,26 +56,35 @@ Deno.serve(async (req: Request) => {
   }
 
   const db = admin();
-  const { data: vendor } = await db
+  const { data: vendorRows } = await db
     .from("vendors")
     .select("id")
-    .eq("tax_registration_number_digits", normalized)
-    .maybeSingle();
-  if (!vendor) {
+    .eq("tax_registration_number_digits", normalized);
+  if (!vendorRows || vendorRows.length === 0) {
     return new Response(JSON.stringify(GENERIC_NOT_FOUND), { headers: { "Content-Type": "application/json" } });
   }
 
-  const { data: mapping } = await db
+  const { data: mappingRows } = await db
     .from("user_vendor_mapping")
     .select("user_id")
-    .eq("vendor_id", vendor.id)
-    .eq("is_primary", true)
-    .maybeSingle();
-  if (!mapping) {
+    .in("vendor_id", vendorRows.map((v) => v.id))
+    .eq("is_primary", true);
+  const distinctUserIds = Array.from(new Set((mappingRows ?? []).map((m) => m.user_id as string)));
+  if (distinctUserIds.length === 0) {
+    return new Response(JSON.stringify(GENERIC_NOT_FOUND), { headers: { "Content-Type": "application/json" } });
+  }
+  if (distinctUserIds.length > 1) {
+    // Mismo RNC pero dos cuentas de portal DISTINTAS en empresas
+    // diferentes -- no deberia pasar si autoLinkByTaxId (bc-sync-vendors)
+    // esta al dia, pero si pasa es un dato inconsistente real (dos
+    // personas/errores de captura con el mismo RNC, o un vinculo que
+    // todavia no corrio). No se adivina cual cuenta usar -- eso podria
+    // loguear a alguien en la cuenta equivocada.
+    console.error(`RNC ${normalized}: ${distinctUserIds.length} cuentas de portal distintas mapeadas -- login ambiguo, revisar user_vendor_mapping`);
     return new Response(JSON.stringify(GENERIC_NOT_FOUND), { headers: { "Content-Type": "application/json" } });
   }
 
-  const { data: profile } = await db.from("user_profiles").select("email").eq("id", mapping.user_id).maybeSingle();
+  const { data: profile } = await db.from("user_profiles").select("email").eq("id", distinctUserIds[0]).maybeSingle();
   if (!profile?.email) {
     return new Response(JSON.stringify(GENERIC_NOT_FOUND), { headers: { "Content-Type": "application/json" } });
   }
