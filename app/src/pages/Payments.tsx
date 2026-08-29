@@ -32,6 +32,7 @@ export function Payments() {
   const invoices = useDomainStore((s) => s.invoices);
   const purchaseOrders = useDomainStore((s) => s.purchaseOrders);
   const suppliers = useDomainStore((s) => s.suppliers);
+  const companies = useDomainStore((s) => s.companies);
 
   const [search, setSearch] = useState("");
   const [paidFilter, setPaidFilter] = useState<"all" | "pending" | "paid">("all");
@@ -39,6 +40,8 @@ export function Payments() {
   const isAdmin = session.role === "admin" || session.role === "superadmin";
   const isSupplier = session.role === "supplier" || session.role === "service_uploader";
   const scopeCompanyId = session.activeCompany?.isGlobal ? null : session.activeCompany?.companyId ?? session.companyId;
+  const showCompanyColumn = isAdmin && !scopeCompanyId;
+  const companiesById = useMemo(() => new Map(companies.map((c) => [c.id, c])), [companies]);
 
   const processed = useMemo(
     () =>
@@ -127,6 +130,7 @@ export function Payments() {
             <thead className="bg-slate-50/90 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
               <tr>
                 <th className="px-5 py-4">{t("invoices")}</th>
+                {showCompanyColumn && <th className="px-5 py-4">Empresa</th>}
                 <th className="px-5 py-4">{t("purchaseOrder")}</th>
                 <th className="px-5 py-4">{t("supplierName")}</th>
                 <th className="px-5 py-4">{t("total")}</th>
@@ -147,6 +151,9 @@ export function Payments() {
                           {inv.invoiceNumber || inv.id.slice(0, 8)}
                         </Link>
                       </td>
+                      {showCompanyColumn && (
+                        <td className="px-5 py-4 text-sm text-slate-600">{companiesById.get(inv.companyId)?.name ?? "-"}</td>
+                      )}
                       <td className="px-5 py-4 text-sm text-slate-700">{order?.orderNumber ?? t("unlinkedOrder")}</td>
                       <td className="px-5 py-4 text-sm text-slate-700">{supplier?.displayName ?? inv.vendorName ?? "-"}</td>
                       <td className="px-5 py-4 text-sm font-semibold text-slate-900">{formatCurrency(inv.total)}</td>
@@ -162,7 +169,7 @@ export function Payments() {
                 })
               ) : (
                 <tr>
-                  <td colSpan={7} className="px-5 py-10 text-center text-sm text-slate-500">
+                  <td colSpan={showCompanyColumn ? 8 : 7} className="px-5 py-10 text-center text-sm text-slate-500">
                     No hay facturas procesadas dentro del alcance actual.
                   </td>
                 </tr>

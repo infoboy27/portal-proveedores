@@ -47,6 +47,7 @@ export function OrdersList() {
   const session = useSessionStore((s) => s.session);
   const purchaseOrders = useDomainStore((s) => s.purchaseOrders);
   const suppliers = useDomainStore((s) => s.suppliers);
+  const companies = useDomainStore((s) => s.companies);
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<PurchaseOrderStatus | "all">("all");
@@ -54,6 +55,11 @@ export function OrdersList() {
   const isAdmin = session.role === "admin" || session.role === "superadmin";
   const isSupplier = session.role === "supplier";
   const scopeCompanyId = session.activeCompany?.isGlobal ? null : session.activeCompany?.companyId ?? session.companyId;
+  // Multiempresa (Fase 6, 2026-08-29): con "Todas las empresas" seleccionado,
+  // las filas de distintas empresas quedan mezcladas -- se agrega la columna
+  // solo en ese caso, para no ensuciar la tabla cuando ya esta acotada a una.
+  const showCompanyColumn = isAdmin && !scopeCompanyId;
+  const companiesById = useMemo(() => new Map(companies.map((c) => [c.id, c])), [companies]);
 
   const scoped = useMemo(
     () =>
@@ -143,6 +149,7 @@ export function OrdersList() {
             <thead className="bg-slate-50/90 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
               <tr>
                 <th className="px-6 py-4">{t("poNumber")}</th>
+                {showCompanyColumn && <th className="px-6 py-4">Empresa</th>}
                 <th className="px-6 py-4">{t("supplier")}</th>
                 <th className="px-6 py-4">{t("orderDate")}</th>
                 <th className="px-6 py-4">{t("amount")}</th>
@@ -160,6 +167,9 @@ export function OrdersList() {
                           {po.orderNumber}
                         </Link>
                       </td>
+                      {showCompanyColumn && (
+                        <td className="px-6 py-4 text-sm text-slate-600">{companiesById.get(po.companyId)?.name ?? "-"}</td>
+                      )}
                       <td className="px-6 py-4">
                         <p className="font-medium text-slate-950">{supplier?.displayName ?? "-"}</p>
                         <p className="text-xs text-slate-500">{supplier?.vendorNumber}</p>
@@ -176,7 +186,7 @@ export function OrdersList() {
                 })
               ) : (
                 <tr>
-                  <td colSpan={5} className="px-6 py-14 text-center text-sm text-slate-500">
+                  <td colSpan={showCompanyColumn ? 6 : 5} className="px-6 py-14 text-center text-sm text-slate-500">
                     <p className="font-semibold text-slate-700">{t("noPurchaseOrdersFound")}</p>
                     <p className="mt-1">{t("noPurchaseOrdersFoundDescription")}</p>
                   </td>

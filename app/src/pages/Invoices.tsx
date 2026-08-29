@@ -32,6 +32,7 @@ export function InvoicesList() {
   const invoices = useDomainStore((s) => s.invoices);
   const purchaseOrders = useDomainStore((s) => s.purchaseOrders);
   const suppliers = useDomainStore((s) => s.suppliers);
+  const companies = useDomainStore((s) => s.companies);
   const uploadInvoice = useDomainStore((s) => s.uploadInvoice);
 
   const [search, setSearch] = useState("");
@@ -46,6 +47,10 @@ export function InvoicesList() {
   const scopeCompanyId = session.activeCompany?.isGlobal ? null : session.activeCompany?.companyId ?? session.companyId;
   const isSupplier = session.role === "supplier";
   const canUpload = session.role === "admin" || session.role === "superadmin" || isSupplier;
+  // Multiempresa (Fase 6, 2026-08-29): igual que en Ordenes/Pagos/Aprobaciones,
+  // la columna solo aparece con "Todas las empresas" seleccionado.
+  const showCompanyColumn = isAdmin && !scopeCompanyId;
+  const companiesById = useMemo(() => new Map(companies.map((c) => [c.id, c])), [companies]);
 
   // Ordenes del proveedor donde tiene sentido cargar una factura -- "las que
   // tenga la orden de compra" (pedido de Jonatan, plan 2026-08-26). Se
@@ -225,6 +230,7 @@ export function InvoicesList() {
             <thead className="bg-slate-50/90 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
               <tr>
                 <th className="px-6 py-4">{t("invoices")}</th>
+                {showCompanyColumn && <th className="px-6 py-4">Empresa</th>}
                 <th className="px-6 py-4">{t("purchaseOrder")}</th>
                 <th className="px-6 py-4">{t("supplierName")}</th>
                 <th className="px-6 py-4">{t("invoiceDate")}</th>
@@ -244,6 +250,9 @@ export function InvoicesList() {
                           {inv.invoiceNumber || inv.id.slice(0, 8)}
                         </Link>
                       </td>
+                      {showCompanyColumn && (
+                        <td className="px-6 py-4 text-sm text-slate-600">{companiesById.get(inv.companyId)?.name ?? "-"}</td>
+                      )}
                       <td className="px-6 py-4 text-sm text-slate-600">{order?.orderNumber ?? t("unlinkedOrder")}</td>
                       <td className="px-6 py-4 text-sm text-slate-600">{supplier?.displayName ?? inv.vendorName ?? "-"}</td>
                       <td className="px-6 py-4 text-sm text-slate-600">{formatDate(inv.invoiceDate)}</td>
@@ -256,7 +265,7 @@ export function InvoicesList() {
                 })
               ) : (
                 <tr>
-                  <td colSpan={6} className="px-6 py-14 text-center text-sm text-slate-500">
+                  <td colSpan={showCompanyColumn ? 7 : 6} className="px-6 py-14 text-center text-sm text-slate-500">
                     {t("noInvoicesFoundDescription") ?? t("noPurchaseOrdersFoundDescription")}
                   </td>
                 </tr>

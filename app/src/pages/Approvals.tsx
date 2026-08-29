@@ -23,6 +23,7 @@ export function Approvals() {
   const invoices = useDomainStore((s) => s.invoices);
   const purchaseOrders = useDomainStore((s) => s.purchaseOrders);
   const suppliers = useDomainStore((s) => s.suppliers);
+  const companies = useDomainStore((s) => s.companies);
   const approveInvoice = useDomainStore((s) => s.approveInvoice);
   const rejectInvoice = useDomainStore((s) => s.rejectInvoice);
 
@@ -34,6 +35,8 @@ export function Approvals() {
   const scopeCompanyId = session.activeCompany?.isGlobal ? null : session.activeCompany?.companyId ?? session.companyId;
   const isGlobalApprover = isAdmin || (session.role === "approver" && !!session.availableCompanies.some((c) => c.isGlobal));
   const allCompanies = isGlobalApprover && !scopeCompanyId;
+  // Multiempresa (Fase 6, 2026-08-29): misma columna que Ordenes/Facturas/Pagos.
+  const companiesById = useMemo(() => new Map(companies.map((c) => [c.id, c])), [companies]);
 
   const pendingInvoices = useMemo(
     () =>
@@ -130,6 +133,7 @@ export function Approvals() {
             <thead className="bg-slate-50/90 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
               <tr>
                 <th className="px-5 py-4">{t("invoices")}</th>
+                {allCompanies && <th className="px-5 py-4">Empresa</th>}
                 <th className="px-5 py-4">{t("purchaseOrder")}</th>
                 <th className="px-5 py-4">{t("supplierName")}</th>
                 <th className="px-5 py-4">{t("total")}</th>
@@ -149,6 +153,9 @@ export function Approvals() {
                         <p className="font-semibold text-slate-950">{inv.invoiceNumber}</p>
                         <StatusBadge status={inv.status} />
                       </td>
+                      {allCompanies && (
+                        <td className="px-5 py-4 text-sm text-slate-600">{companiesById.get(inv.companyId)?.name ?? "-"}</td>
+                      )}
                       <td className="px-5 py-4 text-sm text-slate-700">{order?.orderNumber ?? t("unlinkedOrder")}</td>
                       <td className="px-5 py-4 text-sm text-slate-700">{supplier?.displayName ?? "—"}</td>
                       <td className="px-5 py-4 text-sm font-semibold text-slate-900">{formatCurrency(inv.total)}</td>
@@ -174,7 +181,7 @@ export function Approvals() {
                 })
               ) : (
                 <tr>
-                  <td colSpan={6} className="px-5 py-10 text-center text-sm text-slate-500">
+                  <td colSpan={allCompanies ? 7 : 6} className="px-5 py-10 text-center text-sm text-slate-500">
                     {t("noPurchaseOrdersFoundDescription")}
                   </td>
                 </tr>

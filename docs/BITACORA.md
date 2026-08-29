@@ -1845,3 +1845,31 @@ diga cuál es cuál).
 **Desplegado**: `psql` (schema-v18.sql) + restart `rest`; `docker
 compose build app && up -d` (dos veces — el primer intento no filtraba
 bien `disabled_at`, la corrección real fue el segundo build).
+
+---
+
+## 2026-08-29 (continuación) — Multiempresa: Fase 6 (columna "Empresa" en vistas de admin)
+
+Última fase del plan multiempresa. Se agregó una columna "Empresa" a las
+4 tablas donde el admin/superadmin puede ver data mezclada de varias
+empresas a la vez (`Orders.tsx`, `Invoices.tsx`, `Payments.tsx`,
+`Approvals.tsx`) — visible **solo** cuando la vista está en "Todas las
+empresas" (`scopeCompanyId` nulo), para no ensuciar la tabla cuando ya
+está acotada a una sola. `Approvals.tsx` reusa su variable existente
+`allCompanies` en vez de recalcular la misma condición dos veces.
+
+Verificado visualmente con el navegador real (admin, `/orders`): la
+columna aparece y muestra "Adsemble" en las 15 órdenes reales — queda
+lista para distinguir filas apenas haya una segunda empresa con data real
+activa.
+
+**Con esto quedan completas las 6 fases del plan multiempresa** (ver
+artefacto publicado). Resumen del estado final: esquema y sincronización
+ya soportan las 11 empresas en alcance, login resuelve a una sola cuenta
+por proveedor real sin importar cuántas empresas, RLS y Storage ya no
+dependen de una empresa escalar, y el frontend tiene selector + columna
+de distinción. Activar cada una de las 10 empresas restantes (fuera de
+Adsemble) queda como decisión de negocio de Jonatan, no como trabajo
+técnico pendiente.
+
+**Desplegado**: `docker compose build app && up -d`.
