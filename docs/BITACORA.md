@@ -2826,3 +2826,35 @@ borrada) -- CP-000219 sigue "limpia" para uso real.
 sin `orderSynced`), `Invoices.tsx`/`Payments.tsx`/`PaymentStatusBadge.tsx`
 (aceptan `exported`), `schema-v23.sql` (4 fixes de seguridad + el fix de
 `processed`→`exported`) -- todo aplicado y verificado en vivo.
+
+---
+
+## 2026-09-02 — Requerimiento adicional: ocultar "Solicitar cambio" tras confirmar la orden
+
+**Pedido de Jonatan**: "luego de que el suplidor confirme la orden el boton
+de solicitar cambio deberia de ocultarse por que una vez confirmada la
+orden no puede mandar a cambiar".
+
+**Frontend** (`Orders.tsx`, `OrderDetail`): el botón "Solicitar cambio" y
+su formulario ahora solo se renderizan cuando
+`order.confirmationStatus !== "confirmed"`. El botón "Confirmar" se deja
+visible sin cambios (no fue parte del pedido).
+
+**Backend** (`schema-v24.sql`): ocultar el botón en el frontend es solo
+cosmético -- `rpc_confirm_purchase_order` es el único camino de escritura
+real de este campo y no validaba el estado *actual* de la orden antes de
+aplicar la acción, así que cualquiera podía seguir llamando la RPC
+directo (`/rest/v1/rpc/rpc_confirm_purchase_order`) con
+`p_action='change_requested'` sobre una orden ya confirmada. Se agregó la
+validación: si `confirmation_status = 'confirmed'` y se pide
+`change_requested`, la función lanza excepción.
+
+**Verificado en vivo**: simulando el RPC como usuario `authenticated`
+(dentro de una transacción con `rollback`, sin tocar datos reales) contra
+una orden real ya confirmada -- bloqueado con
+`ERROR: la orden ya esta confirmada, no se puede solicitar un cambio`.
+
+**Desplegado**: `schema-v24.sql` aplicado + `NOTIFY pgrst, 'reload
+schema'`; `Orders.tsx` reconstruido y desplegado (`docker compose build
+app && up -d`), bundle nuevo confirmado en `proveedores.jfmcss.com`
+(`index-CoaFEjcs.js`).

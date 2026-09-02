@@ -541,11 +541,15 @@ export function OrderDetail() {
                 <Button onClick={handleConfirmOrder} disabled={confirming}>
                   {confirming ? t("confirmingOrder") : t("confirmOrderAction")}
                 </Button>
-                <Button variant="ghost" onClick={() => setShowChangeForm((v) => !v)} disabled={confirming}>
-                  {t("requestChangeAction")}
-                </Button>
+                {/* 2026-09-02 (Key Players): una vez la orden esta confirmada ya
+                    no se puede solicitar cambio -- se oculta el boton. */}
+                {order.confirmationStatus !== "confirmed" && (
+                  <Button variant="ghost" onClick={() => setShowChangeForm((v) => !v)} disabled={confirming}>
+                    {t("requestChangeAction")}
+                  </Button>
+                )}
               </div>
-              {showChangeForm && (
+              {showChangeForm && order.confirmationStatus !== "confirmed" && (
                 <div className="w-full max-w-sm space-y-2 rounded-lg border border-slate-200 p-3 sm:w-80">
                   <Input
                     type="date"
