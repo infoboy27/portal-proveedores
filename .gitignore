@@ -35,3 +35,4 @@ infra/business-central/.vscode/*
 # Cache de simbolos de referencia de AL (binarios descargados, no fuente)
 infra/business-central/.alpackages/
 *.app
+.gstack/

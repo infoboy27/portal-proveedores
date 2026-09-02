@@ -540,19 +540,26 @@ export function OrderDetail() {
               <div className="flex gap-2">
                 {/* 2026-09-02 (Key Players): una vez confirmada, "Confirmar
                     orden" se deshabilita -- no tiene sentido volver a
-                    confirmar y generaba entradas duplicadas en el historial. */}
-                <Button onClick={handleConfirmOrder} disabled={confirming || order.confirmationStatus === "confirmed"}>
+                    confirmar y generaba entradas duplicadas en el historial.
+                    Mismo criterio mientras hay un cambio solicitado pendiente
+                    de revisar -- el proveedor ya actuo, no debe poder volver
+                    a confirmar hasta que el estado cambie. */}
+                <Button
+                  onClick={handleConfirmOrder}
+                  disabled={confirming || order.confirmationStatus === "confirmed" || order.confirmationStatus === "change_requested"}
+                >
                   {confirming ? t("confirmingOrder") : t("confirmOrderAction")}
                 </Button>
-                {/* Mismo pedido: una vez la orden esta confirmada ya no se
-                    puede solicitar cambio -- se oculta el boton. */}
-                {order.confirmationStatus !== "confirmed" && (
+                {/* Mismo pedido: una vez la orden esta confirmada, o mientras
+                    hay un cambio solicitado sin resolver, ya no se puede
+                    volver a solicitar otro -- se oculta el boton. */}
+                {order.confirmationStatus === "pending" && (
                   <Button variant="ghost" onClick={() => setShowChangeForm((v) => !v)} disabled={confirming}>
                     {t("requestChangeAction")}
                   </Button>
                 )}
               </div>
-              {showChangeForm && order.confirmationStatus !== "confirmed" && (
+              {showChangeForm && order.confirmationStatus === "pending" && (
                 <div className="w-full max-w-sm space-y-2 rounded-lg border border-slate-200 p-3 sm:w-80">
                   <Input
                     type="date"
