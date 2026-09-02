@@ -21,12 +21,12 @@
       "id": "dc9f2114-cdfc-4bde-8c06-ac259a176816",
       "name": "DSLocalization",
       "publisher": "DYNASOFT SRL",
-      "version": "1.1.2.66"
+      "version": "1.1.2.65"
     }
   ],
   "screenshots": [],
   "platform": "1.0.0.0",
-  "application": "28.4.0.0",
+  "application": "27.5.0.0",
   "idRanges": [
     {
       "from": 58000,

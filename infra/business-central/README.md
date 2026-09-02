@@ -110,10 +110,7 @@ hacerlo la persona dueña de esa cuenta.
 `AL: Download Symbols` pide versiones **exactas** de `application` y de
 las dependencias PTE (`Adsemble Liquid Base`, `DSLocalization`) — no
 alcanza con "mayor o igual". El sandbox (`Test672026`) y `Production`
-corren versiones distintas de BC y de esas mismas extensiones, así que
-`app.json` solo puede estar correcto para uno de los dos entornos a la
-vez. Fase 2 del corte a producción (2026-09-02) lo dejó apuntando a
-**Production**:
+corren versiones distintas de BC y de esas mismas extensiones:
 
 | Campo | Test672026 (sandbox) | Production |
 |---|---|---|
@@ -122,14 +119,55 @@ vez. Fase 2 del corte a producción (2026-09-02) lo dejó apuntando a
 | `dependencies` → `Adsemble Liquid Base`.`version` | `1.0.0.91` | `1.0.0.91` (igual en los dos) |
 
 (Verificado en vivo contra `api/microsoft/automation/v2.0/.../extensions`
-de cada entorno, no adivinado -- confirmó ademas que el valor viejo del
-repo para DSLocalization en el sandbox, `1.1.2.64`, ya estaba desactualizado
-frente al `1.1.2.65` real, sin que nadie lo hubiera notado porque nunca
-volvió a fallar un `Download Symbols` ahí.)
+de cada entorno, no adivinado.)
 
-Si en el futuro hay que volver a desarrollar/probar contra el sandbox,
-hay que revertir esos 2 valores primero (o volver a consultar la API de
-automatización de ese entorno, por si volvió a cambiar).
+**`app.json` en el repo queda apuntado al sandbox** (columna izquierda) —
+ver "Publicar en Production sin conexión de desarrollo" abajo, el motivo.
+
+## Publicar en Production: la conexión de desarrollo (F5 / Download
+Symbols) está bloqueada, hay que compilar y subir el `.app` a mano (2026-09-02)
+
+Con `app.json` ya apuntado a las versiones reales de Production
+(`application: 28.4.0.0`, `DSLocalization: 1.1.2.66`), `AL: Download
+Symbols` contra la configuración `Production` de `launch.json` siguió
+fallando con `Internal Server Error` para los 4 paquetes de referencia
+(`Application`, `System`, `Adsemble Liquid Base`, `DSLocalization`) —
+tres intentos, incluido uno con `AL: Clear Credentials Cache` +
+reautenticación completamente fresca, mismo resultado exacto los tres.
+Esa consistencia (falla igual sin importar si la versión pedida es
+correcta, y sin importar credenciales viejas vs. nuevas) apunta a que el
+entorno **Production tiene deshabilitada la conexión de desarrollo
+directa** (política común en tenants gestionados) — no a un permiso
+puntual de un usuario ni a las versiones del `app.json`.
+
+**Camino que sí funciona**, decidido con Jonatan: compilar la extensión
+contra el **sandbox** (ahí `Download Symbols` y la compilación sí
+funcionan, ya confirmado) y subir el `.app` resultante a Production a
+mano — un método de instalación soportado y estándar de BC que no
+necesita ninguna conexión de desarrollo activa contra Production:
+
+1. `app.json` ya está de vuelta en los valores del sandbox (tabla de
+   arriba, columna izquierda) — no hace falta tocarlo.
+2. En VS Code, seleccioná la configuración **"Test672026 (Sandbox)"** de
+   `launch.json`.
+3. `Ctrl+Shift+P` → **AL: Download Symbols** (debería funcionar, ya se
+   probó antes).
+4. `Ctrl+Shift+P` → **AL: Package** — compila y genera el archivo
+   `.app` en `infra/business-central/` (o la carpeta de salida
+   configurada), **sin** publicarlo ni depurar contra ningún entorno.
+5. En Business Central, entrá a **Production** → **Extension
+   Management** → **Upload Extension** → seleccioná ese `.app` →
+   seguí el asistente de instalación.
+6. Una vez instalada: mismo paso de siempre, crear/ampliar el
+   permission set en Production con los mismos permisos ya otorgados en
+   el sandbox, asignado al `BC_CLIENT_ID` de la integración.
+
+El `.app` compilado contra el sandbox (`Application 27.5.x`,
+`DSLocalization 1.1.2.65`) instala sin problema en Production
+(`28.4.x`, `1.1.2.66`) porque son versiones **más nuevas** — BC acepta
+instalar una extensión sobre dependencias iguales o más nuevas que las
+que declara, el problema era específicamente el paso de compilación en
+vivo contra Production, no la compatibilidad real del código.
 
 ## Después de publicar: cablear el cliente (si hace falta)
 
