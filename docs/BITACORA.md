@@ -3010,3 +3010,63 @@ orden real (`CP-000227`) en `change_requested`.
 orden" gris/deshabilitado, "Solicitar cambio" ya no aparece.
 
 **Commit**: `cebf369`, pusheado a `origin/main`.
+
+---
+
+## 2026-09-02 (continuación) — Fase 1 del corte a producción: servidor nuevo aprovisionado
+
+Jonatan compartió el acceso SSH a un servidor de producción nuevo (Azure,
+`52.156.154.91`, `PortalProveedores_grupo_28088188` en `westus2`). Se
+armó y publicó un plan de corte a producción (artefacto separado, no
+versionado en este repo) con 7 fases; esta entrada documenta la
+ejecución real de la Fase 1.
+
+**Estado inicial** (verificado por SSH, no asumido): VM
+`Standard_D2alds_v7` recién creada, 3.8&nbsp;GB RAM, sin Docker, sin
+firewall. Su "segundo disco" de 110&nbsp;GB resultó ser el disco temporal
+de Azure (confirmado por `/dev/disk/azure/local/...` y
+`/etc/waagent.conf`) — se borra solo al desasignar la VM, nunca debía
+usarse para datos.
+
+**Jonatan resolvió del lado de Azure** (verificado en vivo cada vez):
+1. Resize de la VM a `Standard_D2as_v7` → 7.8&nbsp;GB RAM (el nuevo
+   tamaño de paso no trae disco temporal, el de 110&nbsp;GB desapareció
+   solo).
+2. Adjuntó un Managed Disk real de 64&nbsp;GB (confirmado persistente por
+   su ruta `/dev/disk/azure/data/by-lun/1`, distinta de "local").
+3. Decidió el dominio: `portalproveedores.adsemble.do` (ya existía en
+   Cloudflare, sin apuntar todavía a la IP nueva).
+4. Compartió un token de API de Cloudflare para la zona `adsemble.do`
+   (DNS challenge, mismo patrón que ya usa el Traefik de `jfmc-server`).
+
+**Ejecutado en el servidor** (todo verificado en vivo, no solo aplicado):
+- Disco de 64&nbsp;GB formateado ext4, montado en `/data` por UUID
+  (`nofail` en `/etc/fstab`).
+- Docker instalado vía el repositorio oficial de APT (no el script
+  `curl | sh` de `get.docker.com` — intento inicial bloqueado por el
+  propio Jonatan, se cambió al método más auditable). `data-root`
+  apuntado a `/data/docker`, confirmado con `docker info`.
+- Swap de 2&nbsp;GB.
+- `ufw`: solo 22/80/443, `default deny incoming` — verificado con una
+  conexión SSH nueva que no se cortó el acceso antes de dar por bueno el
+  cambio.
+- Configuración base de Supabase y del portal copiada desde
+  `jfmc-server` vía `tar` en pipe por SSH (sin pasar por rsync, no
+  disponible) — **excluyendo explícitamente** `volumes/db/data` (el
+  Postgres real) y cualquier `.env` real. Producción arranca con base
+  limpia, no migrada.
+- Script de respaldo automatizado (mismo patrón que
+  `dondeta/deploy/backup.sh`: `pg_dump` en loop, retención de 14 días)
+  ya en el servidor — listo para activarse en cuanto haya un Postgres
+  real corriendo (Fase 4), no como parche posterior.
+- Traefik (`v2.11`, mismo patrón que el de `jfmc-server`) desplegado con
+  el resolver de Cloudflare (DNS challenge). **Certificado real emitido
+  y verificado**: contenedor `traefik/whoami` de prueba con las labels
+  reales, logs de Traefik mostrando `"Server responded with a
+  certificate."`, y `curl https://portalproveedores.adsemble.do/` sin
+  `-k` respondiendo `HTTP 200` con certificado válido de verdad —
+  contenedor de prueba eliminado después.
+
+**Fase 1 cerrada.** Lo único que queda pendiente para el corte real es lo
+que ya estaba identificado como bloqueador de BC (extensión sin publicar
+en Production) y las Fases 2/3 — no infraestructura.
