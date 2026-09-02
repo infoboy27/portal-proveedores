@@ -2981,3 +2981,32 @@ sesión): los 4 cron de sync corrian cada minuto en vez de 15/30/360 min.
 **Commits**: `ddb589e` (i18n + StatusBadge), `457fd5f`
 (fetchAllSuppliers), `d1ebf22` (Audit.tsx), `c4ece86` (Exports.tsx) --
 pusheados a `origin/main`.
+
+---
+
+## 2026-09-02 (continuación) — Bloquear ambos botones mientras hay un cambio solicitado
+
+**Pedido de Jonatan** (con `solicitarcambio.png`): con `confirmationStatus
+= "change_requested"` ("Cambio solicitado"), tanto "Confirmar orden" como
+"Solicitar cambio" seguian activos -- el proveedor podia reconfirmar o
+pedir otro cambio mientras el primero seguia sin resolver. Pidio que
+mientras este pendiente ambos boton se bloqueen, y que vuelvan solos
+cuando el estado cambie.
+
+**Frontend** (`Orders.tsx`): "Confirmar orden" se deshabilita con el
+mismo criterio ya usado para `confirmed` (schema-v25), extendido a
+`change_requested`. "Solicitar cambio" y su formulario ahora solo se
+muestran cuando `confirmationStatus === "pending"` -- puramente reactivo,
+en cuanto el estado cambie los botones reaparecen solos sin logica
+adicional.
+
+**Backend** (`schema-v26.sql`): mismo refuerzo de siempre --
+`rpc_confirm_purchase_order` generaliza el check de v24/v25 ("bloqueado
+si ya esta confirmed") a "bloqueado si no esta `pending`", cubriendo
+tambien `change_requested`. Verificado en vivo con `rollback` sobre una
+orden real (`CP-000227`) en `change_requested`.
+
+**Desplegado y verificado visualmente**: `CP-000227` -- "Confirmar
+orden" gris/deshabilitado, "Solicitar cambio" ya no aparece.
+
+**Commit**: `cebf369`, pusheado a `origin/main`.
