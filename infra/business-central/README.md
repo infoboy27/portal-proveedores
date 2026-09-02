@@ -105,6 +105,32 @@ hacerlo la persona dueña de esa cuenta.
 - Una vez confirmado que responde bien en el sandbox, recién ahí publicar
   a `Production` siguiendo el mismo proceso.
 
+## `app.json` apunta a UN solo entorno a la vez (2026-09-02)
+
+`AL: Download Symbols` pide versiones **exactas** de `application` y de
+las dependencias PTE (`Adsemble Liquid Base`, `DSLocalization`) — no
+alcanza con "mayor o igual". El sandbox (`Test672026`) y `Production`
+corren versiones distintas de BC y de esas mismas extensiones, así que
+`app.json` solo puede estar correcto para uno de los dos entornos a la
+vez. Fase 2 del corte a producción (2026-09-02) lo dejó apuntando a
+**Production**:
+
+| Campo | Test672026 (sandbox) | Production |
+|---|---|---|
+| `application` | `27.5.0.0` | `28.4.0.0` |
+| `dependencies` → `DSLocalization`.`version` | `1.1.2.65` | `1.1.2.66` |
+| `dependencies` → `Adsemble Liquid Base`.`version` | `1.0.0.91` | `1.0.0.91` (igual en los dos) |
+
+(Verificado en vivo contra `api/microsoft/automation/v2.0/.../extensions`
+de cada entorno, no adivinado -- confirmó ademas que el valor viejo del
+repo para DSLocalization en el sandbox, `1.1.2.64`, ya estaba desactualizado
+frente al `1.1.2.65` real, sin que nadie lo hubiera notado porque nunca
+volvió a fallar un `Download Symbols` ahí.)
+
+Si en el futuro hay que volver a desarrollar/probar contra el sandbox,
+hay que revertir esos 2 valores primero (o volver a consultar la API de
+automatización de ese entorno, por si volvió a cambiar).
+
 ## Después de publicar: cablear el cliente (si hace falta)
 
 `infra/supabase/functions/_shared/bc-client.ts` ya soporta un segundo
