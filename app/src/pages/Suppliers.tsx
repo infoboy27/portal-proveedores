@@ -1,16 +1,47 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "@/i18n";
 import { useSessionStore } from "@/store/session";
 import { useDomainStore } from "@/store/domain";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
+import type { Supplier } from "@/store/types";
 
 // Reconstruccion de `function zP()` — index-beautified.js:29713.
+//
+// Key Players (2026-09-01, item 7 -- performance): esta es la UNICA
+// pantalla que necesita navegar/buscar TODOS los proveedores (hoy 10.441)
+// -- por eso pide su propia lista aparte (fetchAllSuppliers), en vez de
+// depender del slice `suppliers` del store global, que ahora solo trae los
+// vendors referenciados por invoices/ordenes ya cargadas (ver domain.ts).
+// Se pide UNA vez al entrar a esta pantalla, no despues de cada mutacion
+// de toda la app como pasaba antes.
 export function Suppliers() {
   const { t } = useTranslation();
   const session = useSessionStore((s) => s.session);
-  const suppliers = useDomainStore((s) => s.suppliers);
+  const fetchAllSuppliers = useDomainStore((s) => s.fetchAllSuppliers);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [loadingSuppliers, setLoadingSuppliers] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingSuppliers(true);
+    setLoadError(null);
+    fetchAllSuppliers()
+      .then((rows) => {
+        if (!cancelled) setSuppliers(rows);
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : "No se pudo cargar el listado de proveedores.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingSuppliers(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchAllSuppliers]);
 
   const isAdmin = session.role === "admin" || session.role === "superadmin";
   const scoped = useMemo(() => (isAdmin ? suppliers : suppliers), [isAdmin, suppliers]);
@@ -51,6 +82,7 @@ export function Suppliers() {
 
       <Card className="p-4 sm:p-5">
         <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t("searchSuppliersPlaceholder")} />
+        {loadError && <p className="mt-2 text-sm text-rose-600">{loadError}</p>}
       </Card>
 
       <Card className="overflow-hidden">
@@ -65,7 +97,13 @@ export function Suppliers() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filtered.length > 0 ? (
+              {loadingSuppliers ? (
+                <tr>
+                  <td colSpan={4} className="px-6 py-14 text-center text-sm text-slate-500">
+                    Cargando proveedores...
+                  </td>
+                </tr>
+              ) : filtered.length > 0 ? (
                 filtered.map((s) => (
                   <tr key={s.id} className="transition hover:bg-slate-50/80">
                     <td className="px-6 py-4">

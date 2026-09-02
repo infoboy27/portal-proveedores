@@ -8,7 +8,7 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { ExportStatusBadge } from "@/components/ui/ExportStatusBadge";
 
 type ExportResult =
-  | { kind: "success"; invoiceNumber: string; bcInvoiceNumber: string; attached: boolean }
+  | { kind: "success"; invoiceNumber: string; bcInvoiceNumber: string; attached: boolean; orderSynced: boolean }
   | { kind: "error"; invoiceNumber: string; message: string };
 
 // Reconstruccion de `function wP()` (Monitoreo de exportaciones) del bundle
@@ -40,8 +40,8 @@ export function Exports() {
     if (!session.userId) return;
     setExportingId(invoiceId);
     try {
-      const { bcInvoiceNumber, attached } = await exportInvoice(invoiceId, session.userId);
-      setResult({ kind: "success", invoiceNumber, bcInvoiceNumber, attached });
+      const { bcInvoiceNumber, attached, orderSynced } = await exportInvoice(invoiceId, session.userId);
+      setResult({ kind: "success", invoiceNumber, bcInvoiceNumber, attached, orderSynced });
     } catch (err) {
       setResult({ kind: "error", invoiceNumber, message: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -111,6 +111,11 @@ export function Exports() {
                 </p>
                 <p className="mt-1 text-sm text-slate-600">
                   {result.attached ? "El PDF se adjunto correctamente." : "No tenia PDF para adjuntar."}
+                </p>
+                <p className="mt-1 text-sm text-slate-600">
+                  {result.orderSynced
+                    ? "La Orden de Compra tambien quedo actualizada con la fecha, Nº factura y NCF."
+                    : "No se pudo reflejar en la Orden de Compra (la factura en BC ya quedo bien creada de todas formas) -- revisar si la extension AL de Business Central esta publicada."}
                 </p>
               </>
             ) : (

@@ -13,6 +13,8 @@ export de facturas siguen usando la API estándar sin cambios).
 | `src/VendorLedgerEntriesAPI.al` | `vendorLedgerEntries` — movimientos de cuentas por pagar (pagos, saldo) |
 | `src/VendorPostingSetupAPI.al` | `vendorPostingSetups` — Gen. Bus./Vendor Posting Group, obligatorios para crear ordenes/facturas y no expuestos por la API estandar |
 | `src/PurchInvoiceFiscalAPI.al` | `purchaseInvoiceFiscals` — "No. Comprobante Fiscal" (NCF) en facturas de compra sin publicar, obligatorio para postear y tampoco expuesto por la API estandar |
+| `src/PurchInvoiceOrderLinkAPI.al` | `purchaseInvoiceOrderLinks` — "Order No."/"Order Line No." en lineas de factura de compra sin publicar, para que la orden de origen quede vinculada de verdad (seccion "Detalles Factura" de la orden) en vez de solo tener numeros parecidos. La API estandar marca `orderId` de solo lectura en la creacion y no expone estos campos en absoluto |
+| `src/PurchOrderFiscalAPI.al` | `purchaseOrderFiscals` — lectura del "Expense Class Code" ya cargado en la orden de compra (lo pone quien arma la orden en BC, no el portal), y desde 2026-09-01 lectura+escritura de "Vendor Invoice No." y NCF (`DSNNo. Comprobante Fiscal`) — item 3/5 del pedido de Key Players, el portal deja esos 2 datos + la fecha (via el `orderDate` estandar) visibles en la orden misma, ademas de la factura separada que ya crea `bc-export-invoice` |
 
 ## Ya está instalado y preconfigurado (2026-08-20)
 
@@ -52,11 +54,17 @@ hacerlo la persona dueña de esa cuenta.
 5. En el sandbox, **Business Central → Extension Management**, confirmar
    que "Adsemble Vendor Portal API Extensions" aparece instalada.
 6. Crear (o ampliar) un **permission set** que incluya lectura sobre
-   `Adsm Purch Receipts API`, `Adsm Purch Receipt Lines API`, y
-   `Adsm Vendor Ledger Entr. API`, y asignarlo a la aplicación
-   (`BC_CLIENT_ID`) que ya usa la integración — sin esto, las llamadas
-   autenticadas con las credenciales actuales van a devolver 403 aunque la
-   extensión esté instalada.
+   `Adsm Purch Receipts API`, `Adsm Purch Receipt Lines API`,
+   `Adsm Vendor Ledger Entr. API` y `Adsm Vendor Posting Setup API`, y
+   **lectura + modificación** sobre `Adsm Purch Inv Fiscal API`,
+   `Adsm Purch Inv Order Link API` y `Adsm Purch Order Fiscal API` (las 3 se
+   usan para escribir desde 2026-09-01, la última dejó de ser solo lectura),
+   asignado a la aplicación (`BC_CLIENT_ID`) que ya usa la integración — sin
+   esto, las llamadas autenticadas con las credenciales actuales van a
+   devolver 403 aunque la extensión esté instalada. Si el permission set ya
+   existía de antes con `Adsm Purch Order Fiscal API` en modo solo-lectura,
+   hay que editarlo para agregar Modify, no alcanza con re-publicar la
+   extensión.
 
 ## Antes de dar esto por bueno
 
@@ -78,22 +86,46 @@ hacerlo la persona dueña de esa cuenta.
   Purchase Header" — en ese caso, el explorador de objetos de VS Code
   (`AL: Open Symbols` → tabla `Purchase Header`) sí va a mostrar el nombre
   correcto para corregirlo.
+- **`PurchInvoiceOrderLinkAPI.al` es el segundo archivo con más riesgo de
+  fallar al compilar**, aunque menor que el de arriba: `"Order No."` y
+  `"Order Line No."` son campos estándar de la app base de Microsoft
+  (existen en `Purchase Line` desde NAV), no de un ISV de cumplimiento
+  fiscal — pero tampoco se verificaron todavía contra este tenant
+  específico. Mismo procedimiento si `F5` falla: `AL: Open Symbols` →
+  tabla `Purchase Line`.
+- **`PurchOrderFiscalAPI.al` reutiliza campos ya verificados**: NCF
+  (`"DSNCod. Clasificacion Gasto"` y `"DSNNo. Comprobante Fiscal"`, los
+  mismos de `PurchInvoiceFiscalAPI.al`) sobre el mismo `Purchase Header`,
+  solo que filtrado a `Document Type = Order` en vez de `Invoice` — riesgo
+  de compilación bajo, ya se confirmó vía el `$metadata` legacy en vivo
+  (2026-09-01, ver `docs/BITACORA.md`) que ambos existen. El campo nuevo
+  `"Vendor Invoice No."` **sí es de la app base de Microsoft** (no de un
+  ISV) — riesgo aún más bajo que los DSN, pero como toda esta lista,
+  confirmar contra `AL: Open Symbols` → `Purchase Header` si `F5` falla.
 - Una vez confirmado que responde bien en el sandbox, recién ahí publicar
   a `Production` siguiendo el mismo proceso.
 
-## Después de publicar: falta cablear el cliente
+## Después de publicar: cablear el cliente (si hace falta)
 
-`infra/supabase/functions/_shared/bc-client.ts` hoy arma las URLs contra
-`/api/v2.0` (la API estándar). Las Custom API pages viven bajo un prefijo
-distinto:
+`infra/supabase/functions/_shared/bc-client.ts` ya soporta un segundo
+prefijo de API (`api: "custom"`) para las Custom API pages de esta
+extensión, bajo:
 
 ```
-/api/adsemble/vendorPortal/v1.0/companies({id})/purchaseReceipts
-/api/adsemble/vendorPortal/v1.0/companies({id})/vendorLedgerEntries
+/api/adsemble/vendorPortal/v1.0/companies({id})/...
 ```
 
-`bc-client.ts` necesita un `baseUrl` alternativo (o un parámetro) para
-apuntar a este prefijo en vez de `/api/v2.0` — no se tocó todavía porque no
-tiene sentido cablearlo antes de que la extensión esté publicada y
-probada. Es el siguiente paso una vez confirmes que la extensión
-responde en el sandbox.
+`bc-export-invoice` ya llama `purchaseInvoiceFiscals` (NCF + Expense Class
+Code) y `purchaseInvoiceOrderLinks` (vínculo con la orden) por ese prefijo;
+`bc-sync-orders` ya llama `purchaseOrderFiscals` (lectura del Expense Class
+Code de la orden) — no hace falta tocar el cliente para ninguno de estos.
+`purchaseReceipts` y `vendorLedgerEntries` (solo lectura) están publicados
+pero **todavía no tienen ningún caller** del lado del portal — son el
+siguiente paso una vez se decida qué pantalla los va a mostrar (ver
+`docs/BUSINESS_CENTRAL_INTEGRATION.md §7`).
+
+**Después de publicar `PurchOrderFiscalAPI.al` específicamente:** hace
+falta correr `bc-sync-orders` una vez (manual o esperar al próximo
+schedule) para que las órdenes ya sincronizadas anteriormente traigan
+`bc_expense_class_code` — no se retroalimenta solo con el publish de BC,
+necesita ese sync.

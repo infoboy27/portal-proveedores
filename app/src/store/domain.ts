@@ -9,6 +9,7 @@ import type {
   PurchaseOrder,
   PurchaseOrderLine,
   PurchaseOrderReceipt,
+  PurchaseOrderStatus,
   Supplier,
 } from "./types";
 import {
@@ -71,7 +72,7 @@ interface DomainStore {
   exportInvoice: (
     invoiceId: string,
     changedBy: string,
-  ) => Promise<{ bcInvoiceNumber: string; attached: boolean }>;
+  ) => Promise<{ bcInvoiceNumber: string; attached: boolean; orderSynced: boolean }>;
   confirmInvoiceForApproval: (invoiceId: string, changedBy: string) => Promise<void>;
   // Confirmacion de orden de compra (Dias 7-9): registro solo-portal, nunca
   // escribe a BC directo — ver rpc_confirm_purchase_order en schema-v4.sql.
@@ -97,6 +98,18 @@ interface DomainStore {
     invoiceId: string,
     patch: { invoiceNumber: string; invoiceDate: string; invoiceTaxNumber: string; totalAmount: number },
   ) => Promise<void>;
+  // Eliminar factura cargada por error (pedido Key Players, 2026-09-01,
+  // item 2). Solo mientras sigue en draft/uploaded -- reforzado server-side
+  // por la policy "scoped delete" (schema-v20.sql), esto no es la unica
+  // barrera. Borra el archivo de Storage ANTES que la fila de invoices: la
+  // policy de delete de storage.objects valida contra la fila de invoices
+  // todavia existente (status draft/uploaded) -- si se borrara la fila
+  // primero, la policy de storage ya no encontraria con que validar y el
+  // archivo quedaria huerfano sin poder borrarse. changedBy es quien lo pide
+  // (mismo patron que approveInvoice/rejectInvoice) -- queda registrado en
+  // security_audit_log, no en invoice_status_history (esa tabla cascadea y
+  // desaparece junto con la fila de invoices que se borra).
+  deleteInvoice: (invoiceId: string, changedBy: string) => Promise<void>;
   uploadInvoice: (input: {
     companyId: string;
     purchaseOrderId: string | null;
@@ -134,6 +147,15 @@ interface DomainStore {
   // URL firmada temporal (60s) para descargar el PDF de una factura ya
   // subida -- el bucket "invoices" es privado, no hay URL publica directa.
   downloadInvoiceFile: (filePath: string) => Promise<string>;
+  // Adjuntos de la Orden de Compra en BC (Key Players, 2026-09-01, item 5).
+  // No se persiste nada en Supabase -- se consulta a BC en vivo cada vez
+  // (bc-order-attachments), porque el equipo de Adsemble puede agregar/
+  // sacar adjuntos ahi en cualquier momento y no tiene sentido mantenerlo
+  // sincronizado aparte solo para mostrar una lista.
+  fetchOrderAttachments: (
+    orderId: string,
+  ) => Promise<{ id: string; fileName: string; byteSize: number; lastModifiedDateTime: string }[]>;
+  downloadOrderAttachment: (orderId: string, attachmentId: string, fileName: string, mode?: "view" | "download") => Promise<void>;
   // Onboarding real (2026-08-20): invita un login nuevo de verdad, via la
   // Edge Function invite-user (Admin API + user_profiles + user_vendor_mapping
   // en una sola llamada). Reemplaza el placeholder anterior donde "Crear
@@ -161,6 +183,34 @@ interface DomainStore {
     paidAt: string,
     paymentReference?: string | null,
   ) => Promise<void>;
+  // Fetch propio de Suppliers.tsx (Key Players, 2026-09-01, item 7):
+  // `suppliers` del store global ahora solo trae los vendors referenciados
+  // por lo que ya esta cargado (ver comentario en fetchAll) -- la unica
+  // pantalla que necesita navegar/buscar TODOS los proveedores llama esto
+  // aparte, una vez al entrar, en vez de depender del slice compartido.
+  fetchAllSuppliers: () => Promise<Supplier[]>;
+  // Filtros de Ordenes de Compra del lado servidor (Key Players, 2026-09-01,
+  // item 6): antes Orders.tsx filtraba a mano sobre TODAS las ordenes ya
+  // traidas por fetchAll(). Esto pagina/filtra en la base -- crece bien
+  // aunque el volumen de ordenes aumente mucho, a diferencia del filtro en
+  // memoria de antes. El aislamiento de proveedor NO se arma aca a mano --
+  // lo sigue garantizando "scoped read" (schema-v3.sql) sobre CUALQUIER
+  // forma de esta query, igual que ya pasaba con el fetch completo.
+  fetchPurchaseOrdersPage: (input: {
+    page: number;
+    pageSize: number;
+    orderNumber?: string;
+    status?: PurchaseOrderStatus | "all";
+    dateFrom?: string | null;
+    dateTo?: string | null;
+    vendorId?: string | null;
+    companyId?: string | null;
+  }) => Promise<{ rows: PurchaseOrder[]; totalCount: number }>;
+  // Los 4 numeros de las tarjetas de Orders.tsx reflejan TODO el alcance
+  // del usuario (no lo tecleado en busqueda/status) -- no pueden salir de
+  // una sola pagina de 20 filas, se calculan en la base (rpc_purchase_order_
+  // stats, schema-v21.sql) en vez de sumar sobre filas ya traidas.
+  fetchPurchaseOrderStats: (companyId: string | null) => Promise<{ active: number; drafts: number; pending: number; totalValue: number }>;
 }
 
 export const useDomainStore = create<DomainStore>((set, get) => ({
@@ -176,46 +226,68 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
   loading: false,
   error: null,
 
+  // Key Players (2026-09-01, item 7 -- performance): hasta aca, `vendors`
+  // se traia COMPLETA en cada fetchAll() -- y fetchAll() corre no solo al
+  // entrar, sino DESPUES DE CADA MUTACION de toda la app (aprobar, subir,
+  // confirmar, exportar, eliminar...). Medido en vivo antes de este cambio
+  // (docs/BITACORA.md): 10.441 filas de vendors -> 11 requests paginados
+  // secuenciales -> fetchAll() completo tardaba 2.339ms, la gran mayoria de
+  // ese tiempo en esas 11 vueltas. El resto de las tablas son chicas (20-36
+  // filas) y no explican la lentitud reportada.
+  //
+  // La app en realidad solo necesita, en el 99% de las pantallas, los
+  // vendors que aparecen en las invoices/ordenes/recepciones YA cargadas
+  // (para mostrar nombre/RNC al lado de cada fila) -- no la tabla entera.
+  // La UNICA pantalla que de verdad necesita navegar TODOS los proveedores
+  // es Suppliers.tsx (el listado/búsqueda de proveedores), que ahora tiene
+  // su propio fetch independiente (fetchAllSuppliers, abajo) en vez de
+  // depender de este slice compartido.
   async fetchAll() {
     set({ loading: true, error: null });
     try {
-      const [
-        invoicesRes,
-        invoiceLinesRes,
-        ordersRes,
-        orderLinesRes,
-        receiptsRes,
-        suppliersRows,
-        companiesRes,
-        usersRes,
-        auditRes,
-      ] = await Promise.all([
-        supabase.from("invoices").select("*").order("created_at", { ascending: false }),
-        supabase.from("invoice_lines").select("*").order("sequence", { ascending: true }),
-        supabase.from("purchase_orders").select("*"),
-        supabase.from("purchase_orders_lines").select("*").order("sequence", { ascending: true }),
-        supabase.from("purchase_order_receipts").select("*").order("posting_date", { ascending: false }),
-        fetchAllRows<Record<string, unknown>>("vendors"),
-        supabase.from("companies").select("*").is("disabled_at", null),
-        supabase.from("user_profiles").select("*").order("username", { ascending: true }),
-        supabase.from("invoice_status_history").select("*").order("changed_at", { ascending: false }).limit(100),
-      ]);
+      const [invoicesRes, invoiceLinesRes, ordersRes, orderLinesRes, receiptsRes, companiesRes, usersRes, auditRes] =
+        await Promise.all([
+          supabase.from("invoices").select("*").order("created_at", { ascending: false }),
+          supabase.from("invoice_lines").select("*").order("sequence", { ascending: true }),
+          // purchase_orders paginado igual que vendors -- mismo riesgo de
+          // truncado silencioso a 1000 filas si crece (hoy 21, sin
+          // impacto de performance real todavia, es una salvaguarda).
+          fetchAllRows<Record<string, unknown>>("purchase_orders"),
+          supabase.from("purchase_orders_lines").select("*").order("sequence", { ascending: true }),
+          supabase.from("purchase_order_receipts").select("*").order("posting_date", { ascending: false }),
+          supabase.from("companies").select("*").is("disabled_at", null),
+          supabase.from("user_profiles").select("*").order("username", { ascending: true }),
+          supabase.from("invoice_status_history").select("*").order("changed_at", { ascending: false }).limit(100),
+        ]);
 
+      // Solo los vendor_id que de verdad aparecen en lo que se acaba de
+      // cargar -- normalmente unas pocas decenas, nunca la tabla completa.
+      // RLS de "vendors" ya sigue aplicando sobre este .in() igual que
+      // sobre cualquier otra query -- esto no amplia lo que cada rol puede
+      // ver, solo evita traer de mas lo que ya no iba a mostrarse.
+      const referencedVendorIds = Array.from(
+        new Set(
+          [
+            ...(invoicesRes.data ?? []).map((r) => r.vendor_id as string | null),
+            ...ordersRes.map((r) => (r as { vendor_id: string | null }).vendor_id),
+          ].filter((id): id is string => !!id),
+        ),
+      );
+      const suppliersRows =
+        referencedVendorIds.length > 0
+          ? (await supabase.from("vendors").select("*").in("id", referencedVendorIds)).data ?? []
+          : [];
+
+      // ordersRes ya no es {data,error} -- fetchAllRows tira (throw) directo
+      // si alguna pagina falla, lo agarra el catch de aca abajo.
       const firstError =
-        invoicesRes.error ??
-        invoiceLinesRes.error ??
-        ordersRes.error ??
-        orderLinesRes.error ??
-        receiptsRes.error ??
-        companiesRes.error ??
-        usersRes.error ??
-        auditRes.error;
+        invoicesRes.error ?? invoiceLinesRes.error ?? orderLinesRes.error ?? receiptsRes.error ?? companiesRes.error ?? usersRes.error ?? auditRes.error;
       if (firstError) throw firstError;
 
       set({
         invoices: (invoicesRes.data ?? []).map(mapInvoice),
         invoiceLines: (invoiceLinesRes.data ?? []).map(mapInvoiceLine),
-        purchaseOrders: (ordersRes.data ?? []).map(mapPurchaseOrder),
+        purchaseOrders: ordersRes.map(mapPurchaseOrder),
         purchaseOrderLines: (orderLinesRes.data ?? []).map(mapPurchaseOrderLine),
         purchaseOrderReceipts: (receiptsRes.data ?? []).map(mapPurchaseOrderReceipt),
         suppliers: suppliersRows.map(mapSupplier),
@@ -227,6 +299,40 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err), loading: false });
     }
+  },
+
+  async fetchAllSuppliers() {
+    const rows = await fetchAllRows<Record<string, unknown>>("vendors");
+    return rows.map(mapSupplier);
+  },
+
+  async fetchPurchaseOrdersPage(input) {
+    const from = input.page * input.pageSize;
+    const to = from + input.pageSize - 1;
+    let query = supabase.from("purchase_orders").select("*", { count: "exact" });
+
+    if (input.orderNumber?.trim()) query = query.ilike("order_number", `%${input.orderNumber.trim()}%`);
+    if (input.status && input.status !== "all") query = query.eq("status", input.status);
+    if (input.dateFrom) query = query.gte("order_date", input.dateFrom);
+    if (input.dateTo) query = query.lte("order_date", input.dateTo);
+    if (input.vendorId) query = query.eq("vendor_id", input.vendorId);
+    if (input.companyId) query = query.eq("company_id", input.companyId);
+
+    const { data, error, count } = await query.order("order_date", { ascending: false }).range(from, to);
+    if (error) throw error;
+    return { rows: (data ?? []).map(mapPurchaseOrder), totalCount: count ?? 0 };
+  },
+
+  async fetchPurchaseOrderStats(companyId) {
+    const { data, error } = await supabase.rpc("rpc_purchase_order_stats", { p_company_id: companyId, p_vendor_id: null });
+    if (error) throw error;
+    const row = (data as { active_count: number; draft_count: number; pending_count: number; total_value: number }[])[0];
+    return {
+      active: Number(row?.active_count ?? 0),
+      drafts: Number(row?.draft_count ?? 0),
+      pending: Number(row?.pending_count ?? 0),
+      totalValue: Number(row?.total_value ?? 0),
+    };
   },
 
   async approveInvoice(invoiceId, changedBy) {
@@ -283,7 +389,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     }
     if (!data?.ok) throw new Error(data?.error ?? "La exportacion a Business Central fallo");
     await get().fetchAll();
-    return { bcInvoiceNumber: data.bcInvoiceNumber as string, attached: !!data.attached };
+    return { bcInvoiceNumber: data.bcInvoiceNumber as string, attached: !!data.attached, orderSynced: !!data.orderSynced };
   },
 
   async updateInvoiceData(invoiceId, patch) {
@@ -390,6 +496,65 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     await get().fetchAll();
   },
 
+  // Pedido Key Players (2026-09-01), item 2: eliminar una factura cargada
+  // por error, mientras no haya sido enviada todavia. El unico camino real
+  // es este -- server-side lo re-valida la policy "scoped delete"
+  // (schema-v20.sql: admin/superadmin sin restriccion, proveedor solo
+  // sobre lo suyo y solo en draft/uploaded), asi que un intento de borrar
+  // algo fuera de ese alcance falla en el DELETE mismo, no silenciosamente.
+  //
+  // Orden importa: se borra el archivo de Storage ANTES que la fila de
+  // invoices -- la policy de delete de storage.objects valida contra esa
+  // fila (status draft/uploaded) todavia existente; si se borrara la fila
+  // primero, el archivo quedaria huerfano e imposible de limpiar despues
+  // (la policy ya no tendria contra que validar el file_path).
+  //
+  // No hace falta "desbloquear" la orden aparte -- uploadInvoice nunca toca
+  // purchase_orders.status, asi que en cuanto la fila de invoices
+  // desaparece, el chequeo de "ya tiene factura activa" (aca y en el
+  // trigger de la base) deja de encontrar nada y la orden vuelve a admitir
+  // una carga nueva sola.
+  async deleteInvoice(invoiceId, changedBy) {
+    const invoice = get().invoices.find((inv) => inv.id === invoiceId);
+    if (!invoice) throw new Error("Factura no encontrada.");
+    if (invoice.status !== "draft" && invoice.status !== "uploaded") {
+      throw new Error("Esta factura ya fue enviada para aprobacion -- no se puede eliminar.");
+    }
+
+    if (invoice.filePath) {
+      const { error: removeError } = await supabase.storage.from("invoices").remove([invoice.filePath]);
+      if (removeError) throw removeError;
+    }
+
+    const { error, count } = await supabase.from("invoices").delete({ count: "exact" }).eq("id", invoiceId);
+    if (error) throw error;
+    // count en 0 sin error = la RLS descarto la fila silenciosamente (no es
+    // tuya, o ya no esta en draft/uploaded) -- Supabase no lo reporta como
+    // error, hay que chequearlo a mano para no mostrar "eliminado" en falso.
+    if (!count) throw new Error("No se pudo eliminar la factura (sin permiso o ya no esta en un estado eliminable).");
+
+    // No es fatal si el log falla -- la factura ya se borro correctamente,
+    // que el registro de auditoria no ande no deberia dejar al usuario con
+    // un error confuso sobre algo que si funciono.
+    try {
+      await supabase.from("security_audit_log").insert({
+        event_type: "invoice_deleted",
+        actor_user_id: changedBy,
+        detail: {
+          invoiceId: invoice.id,
+          purchaseOrderId: invoice.purchaseOrderId,
+          vendorId: invoice.supplierId ?? null,
+          invoiceNumber: invoice.invoiceNumber || null,
+          filePath: invoice.filePath,
+        },
+      });
+    } catch (logErr) {
+      console.error("No se pudo registrar invoice_deleted en security_audit_log:", logErr);
+    }
+
+    await get().fetchAll();
+  },
+
   // El bundle original llamaba a un webhook externo de OCR (ver
   // extraido/03-automatizacion.md) que nunca se conecto en esta
   // reconstruccion. Aqui se sube el PDF real a Storage (bucket "invoices"),
@@ -402,6 +567,20 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     const allowedTypes = ["application/pdf", "image/jpeg", "image/png"];
     if (input.file.type && !allowedTypes.includes(input.file.type)) {
       throw new Error("Solo se permite subir la factura en PDF o como foto (JPG/PNG).");
+    }
+
+    // Pedido Key Players (2026-09-01), item 1: 1 Orden de Compra = 1
+    // Factura. Este chequeo es solo para dar un mensaje claro ANTES de subir
+    // el archivo -- la garantia real es el trigger
+    // check_one_active_invoice_per_po (schema-v20.sql), que corre server-side
+    // sobre el INSERT mismo y no se puede saltar llamando la API directo.
+    if (input.purchaseOrderId) {
+      const hasActiveInvoice = get().invoices.some(
+        (inv) => inv.purchaseOrderId === input.purchaseOrderId && inv.status !== "rejected",
+      );
+      if (hasActiveInvoice) {
+        throw new Error("Esta orden de compra ya tiene una factura asociada. Eliminala primero si fue un error.");
+      }
     }
 
     const filePath = `${input.companyId}/${crypto.randomUUID()}-${input.file.name}`;
@@ -514,5 +693,66 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     if (error) throw error;
     if (!data?.signedUrl) throw new Error("No se pudo generar el enlace de descarga");
     return data.signedUrl;
+  },
+
+  async fetchOrderAttachments(orderId) {
+    const { data, error } = await supabase.functions.invoke("bc-order-attachments", { body: { orderId, action: "list" } });
+    if (error) {
+      // Mismo problema que ya se documento en exportInvoice: en un status
+      // no-2xx supabase-js no parsea el body, hay que leerlo a mano de
+      // error.context para no perder el motivo real.
+      const context = (error as { context?: Response }).context;
+      let parsedMessage: string | null = null;
+      if (context) {
+        try {
+          const body = await context.clone().json();
+          if (body?.error) parsedMessage = body.error as string;
+        } catch {
+          // no era JSON -- cae al error generico
+        }
+      }
+      throw parsedMessage ? new Error(parsedMessage) : error;
+    }
+    if (!data?.ok) throw new Error(data?.error ?? "No se pudieron obtener los adjuntos de la orden");
+    return data.attachments as { id: string; fileName: string; byteSize: number; lastModifiedDateTime: string }[];
+  },
+
+  async downloadOrderAttachment(orderId, attachmentId, fileName, mode = "download") {
+    const { data, error } = await supabase.functions.invoke("bc-order-attachments", {
+      body: { orderId, action: "download", attachmentId, fileName },
+    });
+    if (error) {
+      const context = (error as { context?: Response }).context;
+      let parsedMessage: string | null = null;
+      if (context) {
+        try {
+          const body = await context.clone().json();
+          if (body?.error) parsedMessage = body.error as string;
+        } catch {
+          // el cuerpo del error era el binario/no-JSON -- cae al error generico
+        }
+      }
+      throw parsedMessage ? new Error(parsedMessage) : error;
+    }
+    // Content-Type real (PDF, imagen, etc.) -- supabase-js ya devuelve un
+    // Blob para respuestas que no son JSON/texto, no hace falta parsear nada.
+    const blob = data as Blob;
+    const url = URL.createObjectURL(blob);
+    if (mode === "view") {
+      // Sin el atributo download -- el navegador la abre inline si puede
+      // (PDF/imagen), en vez de forzar el guardado.
+      window.open(url, "_blank", "noopener,noreferrer");
+    } else {
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+    // No se revoca de inmediato en modo "view": la pestaña nueva todavia
+    // necesita el blob URL vivo para poder cargarlo -- el navegador lo
+    // libera solo cuando se cierra esa pestaña/proceso.
+    if (mode !== "view") URL.revokeObjectURL(url);
   },
 }));

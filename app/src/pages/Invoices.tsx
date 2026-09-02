@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useTranslation } from "@/i18n";
 import { useSessionStore } from "@/store/session";
 import { useDomainStore } from "@/store/domain";
@@ -9,6 +9,7 @@ import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { PaymentStatusBadge } from "@/components/ui/PaymentStatusBadge";
+import { Modal } from "@/components/ui/Modal";
 import type { InvoiceStatus } from "@/store/types";
 
 const formatCurrency = (value: number) =>
@@ -55,15 +56,28 @@ export function InvoicesList() {
   // Ordenes del proveedor donde tiene sentido cargar una factura -- "las que
   // tenga la orden de compra" (pedido de Jonatan, plan 2026-08-26). Se
   // excluyen "draft" (todavia no es real en BC) y "closed" (ya se
-  // liquido). "partially_invoiced" se incluye a proposito: es el estado
-  // normal cuando ya se cargo una factura y falta otra sobre la misma
-  // orden (varias facturas por PO).
+  // liquido). "partially_invoiced" se sigue incluyendo por las ordenes
+  // viejas que ya traen mas de una factura (excepcion historica, ver
+  // schema-v20.sql) -- para ordenes nuevas ya no deberia volver a darse.
+  //
+  // 1 Orden de Compra = 1 Factura (Key Players, 2026-09-01, item 1): se
+  // excluyen ademas las ordenes que ya tienen una factura activa (status
+  // != rejected) -- la garantia real es el trigger de la base
+  // (check_one_active_invoice_per_po), esto es solo para no ofrecerlas en
+  // el selector.
+  const ordersWithActiveInvoice = useMemo(
+    () => new Set(invoices.filter((inv) => inv.status !== "rejected" && inv.purchaseOrderId).map((inv) => inv.purchaseOrderId!)),
+    [invoices],
+  );
   const openOrdersForSupplier = useMemo(() => {
     if (!isSupplier || !session.supplierId) return [];
     return purchaseOrders.filter(
-      (po) => po.vendorId === session.supplierId && (po.status === "open" || po.status === "partially_invoiced"),
+      (po) =>
+        po.vendorId === session.supplierId &&
+        (po.status === "open" || po.status === "partially_invoiced") &&
+        !ordersWithActiveInvoice.has(po.id),
     );
-  }, [purchaseOrders, isSupplier, session.supplierId]);
+  }, [purchaseOrders, isSupplier, session.supplierId, ordersWithActiveInvoice]);
 
   const scoped = useMemo(
     () =>
@@ -301,6 +315,7 @@ export function InvoiceDetail() {
   const setInvoicePaymentDueDate = useDomainStore((s) => s.setInvoicePaymentDueDate);
   const markInvoicePaid = useDomainStore((s) => s.markInvoicePaid);
   const downloadInvoiceFile = useDomainStore((s) => s.downloadInvoiceFile);
+  const deleteInvoice = useDomainStore((s) => s.deleteInvoice);
 
   const [rejectReason, setRejectReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -317,14 +332,20 @@ export function InvoiceDetail() {
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   const invoice = invoices.find((inv) => inv.id === invoiceId);
   const order = purchaseOrders.find((po) => po.id === invoice?.purchaseOrderId);
   const supplier = suppliers.find((s) => s.id === invoice?.supplierId);
   const lines = useMemo(() => invoiceLines.filter((l) => l.invoiceId === invoiceId), [invoiceLines, invoiceId]);
-  // Puede haber varias facturas sobre la misma orden (plan de observaciones
-  // de usuarios, 2026-08-26) -- se muestra cuanto ya se facturo de otras
-  // facturas de esta orden para que el proveedor vea el saldo disponible.
+  // Desde 2026-09-01 una orden nueva solo admite una factura activa a la vez
+  // (schema-v20.sql) -- esto sigue existiendo por las 6 ordenes viejas que
+  // ya traen mas de una (excepcion historica, no se tocan): se muestra
+  // cuanto ya se facturo de las otras para que el proveedor vea el saldo
+  // disponible en esos casos puntuales.
   const otherInvoicesOnOrderTotal = useMemo(() => {
     if (!order) return 0;
     return invoices
@@ -376,6 +397,17 @@ export function InvoiceDetail() {
   const isApprover = session.role === "admin" || session.role === "superadmin" || session.role === "approver";
   const canConfirm = session.role === "supplier" && invoice.status === "uploaded";
   const canDecide = isApprover && invoice.status === "pending_approval";
+  // Eliminar factura cargada por error (Key Players, 2026-09-01, item 2):
+  // solo mientras no fue "enviada" (draft/uploaded) -- una vez en
+  // pending_approval en adelante ya no es libre, coincide con canConfirm.
+  // admin/superadmin sin restriccion de estado, para corregir errores de
+  // operacion reales. Reforzado server-side por "scoped delete"
+  // (schema-v20.sql) de cualquier forma.
+  const canDelete =
+    session.role === "admin" ||
+    session.role === "superadmin" ||
+    ((session.role === "supplier" || session.role === "service_uploader") &&
+      (invoice.status === "draft" || invoice.status === "uploaded"));
   // PROVINFORM (informal) e INT (extranjero) no manejan NCF dominicano --
   // categoria sincronizada desde BC (vendorPostingSetups), no inventada por
   // el portal. Por defecto (vacio/desconocido) se sigue exigiendo NCF.
@@ -457,6 +489,19 @@ export function InvoiceDetail() {
       setDownloading(false);
     }
   }
+  async function handleDelete() {
+    if (!session.userId) return;
+    setDeleteError(null);
+    setDeleting(true);
+    try {
+      await deleteInvoice(invoice!.id, session.userId);
+      navigate(order ? `/orders/${order.id}` : "/invoices");
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "No fue posible eliminar la factura.");
+      setDeleting(false);
+      setShowDeleteConfirm(false);
+    }
+  }
   async function handleSavePaymentDueDate() {
     setSavingPaymentDueDate(true);
     try {
@@ -491,12 +536,33 @@ export function InvoiceDetail() {
               {downloading ? "..." : "Descargar PDF"}
             </Button>
           )}
+          {canDelete && (
+            <Button variant="danger" onClick={() => setShowDeleteConfirm(true)} disabled={deleting}>
+              Eliminar factura
+            </Button>
+          )}
           <Link to="/invoices">
             <Button variant="ghost">{t("backToOrders")}</Button>
           </Link>
         </div>
       </div>
       {downloadError && <p className="text-sm text-rose-600">{downloadError}</p>}
+      {deleteError && <p className="text-sm text-rose-600">{deleteError}</p>}
+
+      <Modal open={showDeleteConfirm} onClose={() => setShowDeleteConfirm(false)} title="Eliminar factura">
+        <p className="text-sm text-slate-600">
+          ¿Está seguro de que desea eliminar esta factura? Esta acción eliminará el documento cargado y permitirá
+          cargar una nueva factura para esta orden.
+        </p>
+        <div className="mt-6 flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setShowDeleteConfirm(false)} disabled={deleting}>
+            Cancelar
+          </Button>
+          <Button variant="danger" onClick={handleDelete} disabled={deleting}>
+            {deleting ? "Eliminando..." : "Eliminar"}
+          </Button>
+        </div>
+      </Modal>
 
       {showUploadedBanner && (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useTranslation } from "@/i18n";
 import { useSessionStore } from "@/store/session";
@@ -7,7 +7,7 @@ import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
-import type { PurchaseOrderConfirmationStatus, PurchaseOrderStatus } from "@/store/types";
+import type { PurchaseOrder, PurchaseOrderConfirmationStatus, PurchaseOrderStatus } from "@/store/types";
 
 const formatCurrency = (value: number) =>
   new Intl.NumberFormat("es-DO", { style: "currency", currency: "DOP" }).format(value);
@@ -35,67 +35,129 @@ const STATUS_TONE: Record<PurchaseOrderStatus, string> = {
   closed: "bg-slate-200 text-slate-700",
 };
 
+const formatBytes = (bytes: number) => {
+  if (!bytes) return "0 KB";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+};
+
 const CONFIRMATION_TONE: Record<PurchaseOrderConfirmationStatus, string> = {
   pending: "bg-slate-100 text-slate-700",
   confirmed: "bg-emerald-100 text-emerald-700",
   change_requested: "bg-amber-100 text-amber-700",
 };
 
+const PAGE_SIZE = 20;
+
 // Reconstruccion de `function RP()` — index-beautified.js:29350.
+//
+// Key Players (2026-09-01, item 6): filtros del lado servidor. Antes esta
+// pantalla dependia del store global (fetchAll -> TODAS las ordenes) y
+// filtraba en memoria -- funcionaba con 21 ordenes, pero no escala, y el
+// pedido explicito es no depender de traer todo al frontend. Ahora pagina
+// y filtra en la base (fetchPurchaseOrdersPage), con debounce en la
+// busqueda para no disparar una consulta por cada tecla.
+//
+// El aislamiento de proveedor sigue siendo RLS puro ("scoped read",
+// schema-v3.sql) -- no se arma ningun filtro de vendor_id a mano para
+// supplier/service_uploader, la base ya se encarga sin importar la forma
+// de la query. El selector de proveedor solo aparece para quien puede ver
+// mas de uno (admin/superadmin/approver).
 export function OrdersList() {
   const { t } = useTranslation();
   const session = useSessionStore((s) => s.session);
-  const purchaseOrders = useDomainStore((s) => s.purchaseOrders);
   const suppliers = useDomainStore((s) => s.suppliers);
   const companies = useDomainStore((s) => s.companies);
+  const fetchPurchaseOrdersPage = useDomainStore((s) => s.fetchPurchaseOrdersPage);
+  const fetchPurchaseOrderStats = useDomainStore((s) => s.fetchPurchaseOrderStats);
 
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<PurchaseOrderStatus | "all">("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [vendorFilter, setVendorFilter] = useState("");
+  const [page, setPage] = useState(0);
+
+  const [rows, setRows] = useState<PurchaseOrder[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const isAdmin = session.role === "admin" || session.role === "superadmin";
-  const isSupplier = session.role === "supplier";
+  const isApprover = session.role === "approver";
+  const canFilterByVendor = isAdmin || isApprover;
   const scopeCompanyId = session.activeCompany?.isGlobal ? null : session.activeCompany?.companyId ?? session.companyId;
   // Multiempresa (Fase 6, 2026-08-29): con "Todas las empresas" seleccionado,
   // las filas de distintas empresas quedan mezcladas -- se agrega la columna
   // solo en ese caso, para no ensuciar la tabla cuando ya esta acotada a una.
   const showCompanyColumn = isAdmin && !scopeCompanyId;
   const companiesById = useMemo(() => new Map(companies.map((c) => [c.id, c])), [companies]);
-
-  const scoped = useMemo(
-    () =>
-      purchaseOrders.filter((po) => {
-        if (isAdmin) return scopeCompanyId ? po.companyId === scopeCompanyId : true;
-        if (isSupplier) return !!session.supplierId && po.vendorId === session.supplierId;
-        return po.companyId === session.companyId;
-      }),
-    [purchaseOrders, isAdmin, isSupplier, scopeCompanyId, session.companyId, session.supplierId],
-  );
-
   const suppliersById = useMemo(() => new Map(suppliers.map((s) => [s.id, s])), [suppliers]);
-
-  const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return scoped.filter((po) => {
-      const supplier = suppliersById.get(po.vendorId);
-      const matchesQuery =
-        query.length === 0 ||
-        po.orderNumber.toLowerCase().includes(query) ||
-        po.description.toLowerCase().includes(query) ||
-        supplier?.displayName.toLowerCase().includes(query);
-      const matchesStatus = statusFilter === "all" || po.status === statusFilter;
-      return matchesQuery && matchesStatus;
-    });
-  }, [scoped, search, statusFilter, suppliersById]);
-
-  const stats = useMemo(
-    () => ({
-      active: scoped.filter((po) => po.status !== "closed").length,
-      drafts: scoped.filter((po) => po.status === "draft").length,
-      pending: scoped.filter((po) => po.status === "in_review").length,
-      totalValue: scoped.reduce((sum, po) => sum + po.amount, 0),
-    }),
-    [scoped],
+  // Lista para el selector de proveedor -- ordenada por nombre, solo tiene
+  // sentido para quien puede filtrar por mas de uno.
+  const supplierOptions = useMemo(
+    () => (canFilterByVendor ? [...suppliers].sort((a, b) => a.displayName.localeCompare(b.displayName)) : []),
+    [suppliers, canFilterByVendor],
   );
+
+  // Debounce de 350ms sobre la busqueda por numero de orden -- evita una
+  // consulta por cada tecla.
+  useEffect(() => {
+    const id = setTimeout(() => {
+      setSearch(searchInput);
+      setPage(0);
+    }, 350);
+    return () => clearTimeout(id);
+  }, [searchInput]);
+
+  useEffect(() => {
+    setPage(0);
+  }, [statusFilter, dateFrom, dateTo, vendorFilter, scopeCompanyId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+    fetchPurchaseOrdersPage({
+      page,
+      pageSize: PAGE_SIZE,
+      orderNumber: search,
+      status: statusFilter,
+      dateFrom: dateFrom || null,
+      dateTo: dateTo || null,
+      vendorId: canFilterByVendor && vendorFilter ? vendorFilter : null,
+      companyId: scopeCompanyId,
+    })
+      .then(({ rows, totalCount }) => {
+        if (cancelled) return;
+        setRows(rows);
+        setTotalCount(totalCount);
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : "No se pudieron cargar las ordenes de compra.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchPurchaseOrdersPage, page, search, statusFilter, dateFrom, dateTo, vendorFilter, canFilterByVendor, scopeCompanyId]);
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+
+  const [stats, setStats] = useState({ active: 0, drafts: 0, pending: 0, totalValue: 0 });
+  useEffect(() => {
+    let cancelled = false;
+    fetchPurchaseOrderStats(scopeCompanyId).then((s) => {
+      if (!cancelled) setStats(s);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchPurchaseOrderStats, scopeCompanyId]);
 
   return (
     <div className="space-y-6">
@@ -121,17 +183,17 @@ export function OrdersList() {
       </div>
 
       <Card className="p-4 sm:p-5">
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:flex-wrap">
           <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
             placeholder={t("searchOrdersPlaceholder")}
-            className="flex-1"
+            className="flex-1 xl:min-w-[220px]"
           />
           <Select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as PurchaseOrderStatus | "all")}
-            className="xl:w-[260px]"
+            className="xl:w-[220px]"
           >
             <option value="all">{t("allOrderStatuses")}</option>
             {(Object.keys(STATUS_LABEL) as PurchaseOrderStatus[]).map((status) => (
@@ -140,6 +202,21 @@ export function OrdersList() {
               </option>
             ))}
           </Select>
+          <div className="flex items-center gap-2">
+            <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="xl:w-[160px]" />
+            <span className="text-sm text-slate-400">a</span>
+            <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="xl:w-[160px]" />
+          </div>
+          {canFilterByVendor && (
+            <Select value={vendorFilter} onChange={(e) => setVendorFilter(e.target.value)} className="xl:w-[240px]">
+              <option value="">{t("supplier")}: todos</option>
+              {supplierOptions.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.displayName}
+                </option>
+              ))}
+            </Select>
+          )}
         </div>
       </Card>
 
@@ -157,8 +234,20 @@ export function OrdersList() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filtered.length > 0 ? (
-                filtered.map((po) => {
+              {loading ? (
+                <tr>
+                  <td colSpan={showCompanyColumn ? 6 : 5} className="px-6 py-14 text-center text-sm text-slate-500">
+                    Cargando ordenes...
+                  </td>
+                </tr>
+              ) : loadError ? (
+                <tr>
+                  <td colSpan={showCompanyColumn ? 6 : 5} className="px-6 py-14 text-center text-sm text-rose-600">
+                    {loadError}
+                  </td>
+                </tr>
+              ) : rows.length > 0 ? (
+                rows.map((po) => {
                   const supplier = suppliersById.get(po.vendorId);
                   return (
                     <tr key={po.id} className="transition hover:bg-slate-50/80">
@@ -195,6 +284,25 @@ export function OrdersList() {
             </tbody>
           </table>
         </div>
+        {totalCount > 0 && (
+          <div className="flex items-center justify-between border-t border-slate-100 px-6 py-4 text-sm text-slate-600">
+            <p>
+              {totalCount.toLocaleString()} orden{totalCount === 1 ? "" : "es"} · página {page + 1} de {totalPages}
+            </p>
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0 || loading}>
+                Anterior
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                disabled={page >= totalPages - 1 || loading}
+              >
+                Siguiente
+              </Button>
+            </div>
+          </div>
+        )}
       </Card>
     </div>
   );
@@ -215,6 +323,8 @@ export function OrderDetail() {
   const purchaseOrderReceipts = useDomainStore((s) => s.purchaseOrderReceipts);
   const invoices = useDomainStore((s) => s.invoices);
   const uploadInvoice = useDomainStore((s) => s.uploadInvoice);
+  const fetchOrderAttachments = useDomainStore((s) => s.fetchOrderAttachments);
+  const downloadOrderAttachment = useDomainStore((s) => s.downloadOrderAttachment);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -231,8 +341,17 @@ export function OrderDetail() {
     [purchaseOrderReceipts, orderId],
   );
   const linkedInvoices = useMemo(() => invoices.filter((inv) => inv.purchaseOrderId === orderId), [invoices, orderId]);
-  // Una orden puede tener varias facturas -- se excluyen las rechazadas del
-  // acumulado, igual que en InvoiceDetail y en la validacion de domain.ts.
+  // 1 Orden de Compra = 1 Factura (Key Players, 2026-09-01, item 1) -- la
+  // garantia real es el trigger de la base (check_one_active_invoice_per_po,
+  // schema-v20.sql), esto solo controla si se ofrece el boton de carga.
+  // Las 6 ordenes viejas con mas de una factura activa (excepcion historica,
+  // no se tocan) tambien caen aca: en cuanto tienen 1+ activa, dejan de
+  // admitir otra igual que cualquier orden nueva.
+  const hasActiveInvoice = useMemo(() => linkedInvoices.some((inv) => inv.status !== "rejected"), [linkedInvoices]);
+  // Desde 2026-09-01 una orden nueva solo admite una factura activa (ver
+  // hasActiveInvoice arriba) -- este acumulado sigue sumando todo lo no
+  // rechazado por las 6 ordenes viejas que ya traen mas de una (excepcion
+  // historica, no se tocan), igual que en InvoiceDetail y domain.ts.
   const invoicedTotal = useMemo(
     () => linkedInvoices.filter((inv) => inv.status !== "rejected").reduce((sum, inv) => sum + inv.total, 0),
     [linkedInvoices],
@@ -253,6 +372,46 @@ export function OrderDetail() {
   const [showChangeForm, setShowChangeForm] = useState(false);
   const [changeReason, setChangeReason] = useState("");
   const [newExpectedDate, setNewExpectedDate] = useState("");
+
+  // Adjuntos de la orden en BC (Key Players, 2026-09-01, item 5) -- no vive
+  // en el store global de dominio a proposito (ver comentario en
+  // domain.ts:fetchOrderAttachments), se pide en vivo cada vez que se abre
+  // el detalle de esta orden puntual.
+  const [attachments, setAttachments] = useState<{ id: string; fileName: string; byteSize: number; lastModifiedDateTime: string }[] | null>(null);
+  const [attachmentsError, setAttachmentsError] = useState<string | null>(null);
+  const [loadingAttachments, setLoadingAttachments] = useState(false);
+  const [downloadingAttachmentId, setDownloadingAttachmentId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!orderId) return;
+    let cancelled = false;
+    setLoadingAttachments(true);
+    setAttachmentsError(null);
+    fetchOrderAttachments(orderId)
+      .then((rows) => {
+        if (!cancelled) setAttachments(rows);
+      })
+      .catch((err) => {
+        if (!cancelled) setAttachmentsError(err instanceof Error ? err.message : "No se pudieron cargar los adjuntos.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingAttachments(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [orderId, fetchOrderAttachments]);
+
+  async function handleOpenAttachment(attachmentId: string, fileName: string, mode: "view" | "download") {
+    setDownloadingAttachmentId(attachmentId);
+    try {
+      await downloadOrderAttachment(orderId, attachmentId, fileName, mode);
+    } catch (err) {
+      setAttachmentsError(err instanceof Error ? err.message : "No se pudo abrir el adjunto.");
+    } finally {
+      setDownloadingAttachmentId(null);
+    }
+  }
 
   async function handleConfirmOrder() {
     if (!order || !session.userId) return;
@@ -414,10 +573,14 @@ export function OrderDetail() {
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="text-lg font-semibold text-slate-950">{t("uploadInvoice")}</h2>
-              <p className="mt-1 text-sm text-slate-600">{t("uploadInvoiceDescription")}</p>
+              <p className="mt-1 text-sm text-slate-600">
+                {hasActiveInvoice
+                  ? "Esta orden de compra ya tiene una factura asociada. Eliminala primero si fue un error para poder cargar otra."
+                  : t("uploadInvoiceDescription")}
+              </p>
               {uploadError && <p className="mt-2 text-sm text-rose-700">{uploadError}</p>}
             </div>
-            <Button onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+            <Button onClick={() => fileInputRef.current?.click()} disabled={uploading || hasActiveInvoice}>
               {uploading ? "..." : t("uploadInvoice")}
             </Button>
             <input
@@ -501,6 +664,68 @@ export function OrderDetail() {
                     <td className="px-5 py-4 text-sm text-slate-600">{r.vendorShipmentNo || "-"}</td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      <Card className="overflow-hidden p-0">
+        <div className="border-b border-slate-100 px-5 py-5">
+          <h2 className="text-lg font-semibold text-slate-950">Datos adjuntos</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Documentos adjuntos a esta orden en Business Central (Pedido → Datos adjuntos).
+          </p>
+        </div>
+        {loadingAttachments ? (
+          <div className="p-5 text-sm text-slate-500">Cargando adjuntos...</div>
+        ) : attachmentsError ? (
+          <div className="p-5 text-sm text-rose-700">{attachmentsError}</div>
+        ) : !attachments || attachments.length === 0 ? (
+          <div className="p-5">
+            <p className="font-semibold text-slate-800">Sin adjuntos todavia</p>
+            <p className="mt-1 text-sm text-slate-500">Esta orden no tiene documentos adjuntos en Business Central.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left">
+              <thead className="bg-slate-50/90 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                <tr>
+                  <th className="px-5 py-4">Archivo</th>
+                  <th className="px-5 py-4">Tipo</th>
+                  <th className="px-5 py-4">Tamaño</th>
+                  <th className="px-5 py-4"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {attachments.map((att) => {
+                  const ext = att.fileName.includes(".") ? att.fileName.split(".").pop()!.toUpperCase() : "-";
+                  return (
+                    <tr key={att.id}>
+                      <td className="px-5 py-4 text-sm font-medium text-slate-900">{att.fileName}</td>
+                      <td className="px-5 py-4 text-sm text-slate-600">{ext}</td>
+                      <td className="px-5 py-4 text-sm text-slate-600">{formatBytes(att.byteSize)}</td>
+                      <td className="px-5 py-4 text-right">
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            variant="ghost"
+                            onClick={() => handleOpenAttachment(att.id, att.fileName, "view")}
+                            disabled={downloadingAttachmentId === att.id}
+                          >
+                            Ver
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            onClick={() => handleOpenAttachment(att.id, att.fileName, "download")}
+                            disabled={downloadingAttachmentId === att.id}
+                          >
+                            {downloadingAttachmentId === att.id ? "..." : "Descargar"}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

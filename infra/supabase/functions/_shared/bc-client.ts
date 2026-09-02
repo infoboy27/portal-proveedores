@@ -165,3 +165,37 @@ export async function bcAttachFile(
   }
   return created;
 }
+
+// Lectura de adjuntos (Key Players, 2026-09-01, item 5) -- /attachments es
+// un sub-recurso de la API ESTANDAR v2.0 (confirmado en vivo contra
+// purchaseOrders, no hace falta ninguna extension AL para esto, a
+// diferencia de purchaseOrderFiscals). Sirve igual para cualquier
+// documento que soporte adjuntos (purchaseOrders, purchaseInvoices, etc.),
+// no solo ordenes.
+export interface BcAttachment {
+  id: string;
+  fileName: string;
+  byteSize: number;
+  documentId: string;
+  lastModifiedDateTime: string;
+}
+
+export async function bcListAttachments(companyId: string, parentPath: string): Promise<BcAttachment[]> {
+  const res = await bcGet<{ value: BcAttachment[] }>(companyId, `${parentPath}/attachments`);
+  return res.value;
+}
+
+// Devuelve el Response crudo (sin parsear) -- attachmentContent es una
+// propiedad de streaming, el binario viaja tal cual con su Content-Type
+// real, no como JSON. Quien llama decide si lo reenvia directo (proxy) o
+// lo lee a bytes.
+export async function bcGetAttachmentContent(companyId: string, parentPath: string, attachmentId: string): Promise<Response> {
+  const res = await bcFetch(
+    companyPath(companyId, `${parentPath}/attachments(${attachmentId})/attachmentContent`),
+    "standard",
+  );
+  if (!res.ok) {
+    throw new Error(`BC GET attachment content -> HTTP ${res.status} ${await res.text()}`);
+  }
+  return res;
+}

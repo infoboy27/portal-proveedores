@@ -5,8 +5,25 @@
 // Fase A: la API v2.0 de BC no tiene "crear factura desde orden" por REST,
 // asi que replicamos ese comportamiento copiando purchaseOrderLines ->
 // purchaseInvoiceLines a mano.
+//
+// Vinculo real con la orden (2026-08-30): copiar los numeros no basta para
+// que BC trate la factura como "sacada de la orden" -- confirmado en /qa
+// que la orden de compra no reflejaba nada en su seccion "Detalles Factura"
+// porque la factura creada por este flujo no tenia "Order No."/"Order Line
+// No." en sus lineas (los campos que la funcion nativa "Obtener lineas de
+// pedido" completa, y que la codeunit de posteo de BC usa para actualizar
+// "Quantity Invoiced" en la orden al momento de postear). Se agrega un
+// PATCH por linea contra el custom API PurchInvoiceOrderLinkAPI.al para
+// poner esos dos campos -- no fatal si falla (la factura ya quedo creada y
+// usable, solo sin el vinculo nativo), pero se cuenta y se reporta.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { bcPost, bcPatch, bcAttachFile } from "../_shared/bc-client.ts";
+
+// La linea sin publicar de una factura de compra en BC — solo los campos
+// que interesan aca. Ver PurchInvoiceOrderLinkAPI.al.
+interface CreatedInvoiceLine {
+  id: string;
+}
 
 interface ExportRequest {
   invoiceId: string;
@@ -36,6 +53,30 @@ async function markError(db: ReturnType<typeof admin>, invoiceId: string, change
 
 Deno.serve(async (req: Request) => {
   const db = admin();
+
+  // Encontrado en la ronda de pruebas de Key Players (2026-09-01, item 8:
+  // "nunca confiar en el vendorId/rol que mande el frontend"): a diferencia
+  // de invite-user/delete-user/reset-user-password, esta funcion nunca
+  // habia validado quien la llama -- cualquiera con la clave anon (sin
+  // sesion, sin rol de aprobador) podia invocarla directo y crear una
+  // factura real en BC. Exports.tsx solo la ofrece a admin/superadmin/
+  // approver (exports.read en ROLE_FEATURES), asi que el backend tiene que
+  // exigir lo mismo, no confiar en que la UI oculte el boton.
+  const authHeader = req.headers.get("Authorization");
+  if (!authHeader?.startsWith("Bearer ")) {
+    return new Response(JSON.stringify({ ok: false, error: "Falta el token de quien pide la exportacion" }), { status: 401 });
+  }
+  const { data: callerAuth, error: callerAuthErr } = await db.auth.getUser(authHeader.replace("Bearer ", ""));
+  if (callerAuthErr || !callerAuth.user) {
+    return new Response(JSON.stringify({ ok: false, error: "Token invalido o expirado" }), { status: 401 });
+  }
+  const { data: callerProfile } = await db.from("user_profiles").select("role").eq("id", callerAuth.user.id).maybeSingle();
+  if (!callerProfile || !["admin", "superadmin", "approver"].includes(callerProfile.role as string)) {
+    return new Response(JSON.stringify({ ok: false, error: "Solo un administrador o aprobador puede exportar a Business Central" }), {
+      status: 403,
+    });
+  }
+
   let body: ExportRequest;
   try {
     body = await req.json();
@@ -106,9 +147,9 @@ Deno.serve(async (req: Request) => {
 
     // 1. Cabecera de la factura en BC. `orderId` es de solo lectura en la API
     // v2.0 (confirmado en sandbox: "Control 'orderId' is read-only") — no se
-    // puede setear en la creacion. El vinculo con la orden se logra copiando
-    // vendor + lineas de la PO (paso 2), que es la "plantilla" que pide el
-    // cliente, aunque el campo interno orderId del header quede vacio.
+    // puede setear en la creacion. El vinculo real con la orden se logra
+    // linea por linea en el paso 2 (Order No./Order Line No. via el custom
+    // API), no en la cabecera.
     const created = await bcPost<{ id: string; number: string }>(bcCompanyId, "/purchaseInvoices", {
       vendorNumber: vendor.vendor_number,
       invoiceDate: invoice.invoice_date,
@@ -124,9 +165,10 @@ Deno.serve(async (req: Request) => {
     // esta verificacion el export se marcaba "processed" como si hubiera
     // funcionado. Encontrado en /qa 2026-08-20 exportando una factura real.
     let copiedLines = 0;
+    let orderLinked = 0;
     for (const line of lines ?? []) {
       if (!line.bc_line_type || !line.bc_line_object_number) continue;
-      await bcPost(bcCompanyId, `/purchaseInvoices(${created.id})/purchaseInvoiceLines`, {
+      const createdLine = await bcPost<CreatedInvoiceLine>(bcCompanyId, `/purchaseInvoices(${created.id})/purchaseInvoiceLines`, {
         lineType: line.bc_line_type,
         lineObjectNumber: line.bc_line_object_number,
         description: line.description,
@@ -134,6 +176,22 @@ Deno.serve(async (req: Request) => {
         unitCost: line.bc_unit_cost,
       });
       copiedLines += 1;
+
+      // "sequence" de purchaseOrderLines ES el "Line No." interno de BC
+      // (asi lo guarda bc-sync-orders) -- es lo que "orderLineNo" espera.
+      if (order.order_number && line.sequence != null) {
+        try {
+          await bcPatch(
+            bcCompanyId,
+            `/purchaseInvoiceOrderLinks(${createdLine.id})`,
+            { orderNo: order.order_number, orderLineNo: line.sequence },
+            "custom",
+          );
+          orderLinked += 1;
+        } catch (linkErr) {
+          console.error(`No se pudo vincular la linea ${createdLine.id} con la orden ${order.order_number}: ${linkErr}`);
+        }
+      }
     }
     if ((lines ?? []).length > 0 && copiedLines === 0) {
       throw new Error(
@@ -161,23 +219,24 @@ Deno.serve(async (req: Request) => {
         `La factura ${created.number} se creo en BC pero no tiene NCF (invoice_tax_number) — Business Central no la va a dejar postear sin ese dato`,
       );
     }
-    if (invoice.invoice_tax_number) {
-      await bcPatch(
-        bcCompanyId,
-        `/purchaseInvoiceFiscals(${created.id})`,
-        { fiscalDocumentNo: invoice.invoice_tax_number },
-        "custom",
-      );
+    // 2.6. "Expense Class Code" — segundo campo obligatorio de cumplimiento
+    // fiscal (reportes 606/607/608 de la DGII) para poder postear. NO es una
+    // regla que el portal calcule: quien arma la orden de compra en BC ya lo
+    // elige al crearla (confirmado en vivo 2026-08-31 contra ordenes reales
+    // via el legacy OData v4 "Pedido_compra_Excel" -- 12 de 15 ordenes de
+    // ADSEMBLE ya lo traian poblado). bc-sync-orders lo lee de la orden
+    // (purchaseOrderFiscals, solo lectura) y lo guarda en
+    // purchase_orders.bc_expense_class_code; aca simplemente se copia a la
+    // factura, junto con el NCF, sobre el mismo SystemId. Si la orden no lo
+    // tiene (ordenes viejas/de prueba sin ese dato en BC), queda vacio en la
+    // factura igual que antes -- no bloquea el export, solo el posteo
+    // posterior en BC.
+    const fiscalPatch: Record<string, string> = {};
+    if (invoice.invoice_tax_number) fiscalPatch.fiscalDocumentNo = invoice.invoice_tax_number;
+    if (order.bc_expense_class_code) fiscalPatch.expenseClassCode = order.bc_expense_class_code;
+    if (Object.keys(fiscalPatch).length > 0) {
+      await bcPatch(bcCompanyId, `/purchaseInvoiceFiscals(${created.id})`, fiscalPatch, "custom");
     }
-
-    // NOTA: existe un segundo campo obligatorio para postear, "Expense
-    // Class Code" (misma page 58004, campo `expenseClassCode`) — clasificacion
-    // de gasto para los reportes 606/607/608 de la DGII. No se autocompleta
-    // aqui a proposito: es una decision contable de Adsemble (que codigo
-    // corresponde a que tipo de gasto/cuenta), no un dato que el portal
-    // pueda inferir del proveedor o la factura sin equivocarse. Mientras no
-    // se defina esa regla, el posteo en BC requiere completarlo a mano ahi
-    // (o decidir una regla y volver a esta funcion para automatizarlo).
 
     // 3. Adjuntar el PDF de la factura, si ya fue subido a Storage.
     let attached = false;
@@ -187,6 +246,52 @@ Deno.serve(async (req: Request) => {
       const bytes = new Uint8Array(await fileBlob.arrayBuffer());
       await bcAttachFile(bcCompanyId, `/purchaseInvoices(${created.id})`, invoice.filename ?? "factura.pdf", bytes, "application/pdf");
       attached = true;
+    }
+
+    // 3.5. Reflejar los mismos datos en la Orden de Compra misma (Key
+    // Players, 2026-09-01, items 3 y 5). Confirmado con Jonatan: esto es
+    // ADEMAS del flujo de arriba (la Factura de Compra separada, que sigue
+    // siendo lo unico que postea y alimenta 606/607/608), no en su lugar --
+    // el equipo de Adsemble mira hoy la orden misma (ver
+    // docs/BITACORA.md, captura ordendecompra1.png) y quiere ver ahi la
+    // fecha/Nº factura/NCF + el PDF, sin tener que abrir la factura aparte.
+    //
+    // orderDate es un campo ESTANDAR de la API v2.0 de purchaseOrders
+    // (confirmado en vivo: orderDate de CP-000221 = 2026-09-01 = "1/9/2026"
+    // de la captura) -- se patchea directo, sin custom API. Vendor Invoice
+    // No. y el NCF si necesitan el custom API (purchaseOrderFiscals, page
+    // 58006, extendido para esto -- ver infra/business-central/README.md).
+    //
+    // A proposito NO fatal: la factura real (lo que importa para
+    // contabilidad/DGII) ya se creo arriba con exito. Si este paso
+    // adicional falla (ej. la extension AL todavia no fue publicada por
+    // Jonatan en el sandbox), la exportacion NO se marca export_error por
+    // esto -- solo se loguea, y el resultado lo reporta orderSynced:false
+    // para que quien exporta lo note sin que el flujo principal se rompa.
+    let orderSynced = false;
+    try {
+      if (order.bc_id) {
+        if (invoice.invoice_date) {
+          await bcPatch(bcCompanyId, `/purchaseOrders(${order.bc_id})`, { orderDate: invoice.invoice_date });
+        }
+        const orderFiscalPatch: Record<string, string> = {};
+        if (invoice.invoice_number) orderFiscalPatch.vendorInvoiceNumber = invoice.invoice_number;
+        if (invoice.invoice_tax_number) orderFiscalPatch.fiscalDocumentNo = invoice.invoice_tax_number;
+        if (Object.keys(orderFiscalPatch).length > 0) {
+          await bcPatch(bcCompanyId, `/purchaseOrderFiscals(${order.bc_id})`, orderFiscalPatch, "custom");
+        }
+        if (invoice.file_path) {
+          const { data: orderFileBlob, error: orderDownloadErr } = await db.storage.from("invoices").download(invoice.file_path);
+          if (orderDownloadErr) throw new Error(`No se pudo releer el PDF de Storage: ${orderDownloadErr.message}`);
+          const orderBytes = new Uint8Array(await orderFileBlob.arrayBuffer());
+          await bcAttachFile(bcCompanyId, `/purchaseOrders(${order.bc_id})`, invoice.filename ?? "factura.pdf", orderBytes, "application/pdf");
+        }
+        orderSynced = true;
+      }
+    } catch (orderSyncErr) {
+      console.error(
+        `No se pudo reflejar la factura en la Orden de Compra ${order.order_number} (no bloquea el export, la factura ya se creo en BC): ${orderSyncErr instanceof Error ? orderSyncErr.message : String(orderSyncErr)}`,
+      );
     }
 
     const { error: updateErr } = await db
@@ -210,7 +315,15 @@ Deno.serve(async (req: Request) => {
     });
 
     return new Response(
-      JSON.stringify({ ok: true, bcInvoiceId: created.id, bcInvoiceNumber: created.number, attached }),
+      JSON.stringify({
+        ok: true,
+        bcInvoiceId: created.id,
+        bcInvoiceNumber: created.number,
+        attached,
+        copiedLines,
+        orderLinked,
+        orderSynced,
+      }),
       { headers: { "Content-Type": "application/json" } },
     );
   } catch (err) {
