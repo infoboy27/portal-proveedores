@@ -538,11 +538,14 @@ export function OrderDetail() {
           {canConfirmOrder && (
             <div className="flex flex-col gap-2 sm:items-end">
               <div className="flex gap-2">
-                <Button onClick={handleConfirmOrder} disabled={confirming}>
+                {/* 2026-09-02 (Key Players): una vez confirmada, "Confirmar
+                    orden" se deshabilita -- no tiene sentido volver a
+                    confirmar y generaba entradas duplicadas en el historial. */}
+                <Button onClick={handleConfirmOrder} disabled={confirming || order.confirmationStatus === "confirmed"}>
                   {confirming ? t("confirmingOrder") : t("confirmOrderAction")}
                 </Button>
-                {/* 2026-09-02 (Key Players): una vez la orden esta confirmada ya
-                    no se puede solicitar cambio -- se oculta el boton. */}
+                {/* Mismo pedido: una vez la orden esta confirmada ya no se
+                    puede solicitar cambio -- se oculta el boton. */}
                 {order.confirmationStatus !== "confirmed" && (
                   <Button variant="ghost" onClick={() => setShowChangeForm((v) => !v)} disabled={confirming}>
                     {t("requestChangeAction")}

@@ -2858,3 +2858,32 @@ una orden real ya confirmada -- bloqueado con
 schema'`; `Orders.tsx` reconstruido y desplegado (`docker compose build
 app && up -d`), bundle nuevo confirmado en `proveedores.jfmcss.com`
 (`index-CoaFEjcs.js`).
+
+---
+
+## 2026-09-02 — Requerimiento adicional: deshabilitar "Confirmar orden" tras confirmar
+
+**Pedido de Jonatan**: "cuando la orden ya este confirmada el boton de
+Confirmar orden se deshabilite por que ahora me permite darle una y otra
+vez, sin necesidad".
+
+**Frontend** (`Orders.tsx`): el botón "Confirmar orden" ahora se
+deshabilita (`disabled`) cuando `order.confirmationStatus === "confirmed"`
+-- sigue visible (a diferencia de "Solicitar cambio", que se oculta) pero
+ya no se puede volver a hacer click.
+
+**Backend** (`schema-v25.sql`): mismo criterio de defensa en profundidad
+que `schema-v24.sql` -- se generaliza el check para que
+`rpc_confirm_purchase_order` rechace CUALQUIER acción (no solo
+`change_requested`) una vez la orden ya está `confirmed`. Sin esto, cada
+click de más -- o una llamada directa al RPC -- insertaba otra fila en
+`purchase_order_confirmations`, ensuciando el historial sin necesidad.
+
+**Verificado en vivo**: simulando el RPC como usuario `authenticated`
+(transacción con `rollback`) contra una orden real ya confirmada,
+pidiendo `p_action='confirmed'` de nuevo -- bloqueado con `ERROR: la
+orden ya esta confirmada, no se puede modificar la confirmacion`.
+
+**Desplegado**: `schema-v25.sql` aplicado + `NOTIFY pgrst, 'reload
+schema'`; `Orders.tsx` reconstruido y desplegado, bundle nuevo confirmado
+en `proveedores.jfmcss.com` (`index-DjwM9Q83.js`).
