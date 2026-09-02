@@ -24,6 +24,10 @@ type ExportResult =
 // 2026-09-02: dejo de crear una Factura de Compra en BC -- solo completa
 // la seccion General de la Orden de Compra (fecha/Nº factura/NCF) y
 // adjunta el PDF ahi. Ver el comentario grande en bc-export-invoice/index.ts.
+//
+// 2026-09-02 (QA): fila sin numero visible para facturas recien cargadas
+// (invoiceNumber aun vacio) -- mismo fallback a los primeros 8 caracteres
+// del id que ya usa Invoices.tsx.
 
 function formatUpdated(value: string) {
   if (!value) return "";
@@ -74,7 +78,7 @@ export function Exports() {
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
-                  <p className="font-semibold text-slate-950">{inv.invoiceNumber}</p>
+                  <p className="font-semibold text-slate-950">{inv.invoiceNumber || inv.id.slice(0, 8)}</p>
                   <StatusBadge status={inv.status} />
                   <ExportStatusBadge status={inv.status} />
                 </div>
