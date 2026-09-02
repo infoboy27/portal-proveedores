@@ -3,13 +3,19 @@ import { useTranslation } from "@/i18n";
 import { useDomainStore } from "@/store/domain";
 import { Card } from "@/components/ui/Card";
 
+// Hallazgo QA 2026-09-02: los estados que faltaban aca (pending_approval,
+// paid, export_error) se mostraban crudos ("Estado: pending_approval") en
+// vez de un mensaje traducido -- confirmado en vivo en /audit.
 const STATUS_MESSAGE_KEY: Record<string, string> = {
   uploaded: "invoiceUploadedAudit",
+  pending_approval: "invoiceConfirmedForApprovalAudit",
   approved: "invoiceApprovedAudit",
   rejected: "invoiceRejectedAudit",
   ready_for_export: "invoiceQueuedAudit",
   exported: "invoiceExportedAudit",
   processed: "invoiceExportedAudit",
+  paid: "invoicePaidAudit",
+  export_error: "invoiceExportErrorAudit",
 };
 
 function formatDate(value: string) {

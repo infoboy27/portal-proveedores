@@ -307,6 +307,8 @@
   "invoiceRejectedAudit": "Invoice was rejected:",
   "invoiceQueuedAudit": "Invoice was sent to the ERP export queue.",
   "invoiceExportedAudit": "Invoice was exported successfully to Business Central.",
+  "invoicePaidAudit": "Invoice was marked as paid.",
+  "invoiceExportErrorAudit": "The Business Central export failed:",
   "selectCompanyToUploadWithoutOrder": "Select a company to upload an invoice without a purchase order.",
   "selectCompanyToEditInvoiceLines": "Select a company to add or edit lines on this invoice.",
   "draft": "Draft",

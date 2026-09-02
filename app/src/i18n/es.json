@@ -328,6 +328,8 @@
   "invoiceRejectedAudit": "La factura fue rechazada:",
   "invoiceQueuedAudit": "La factura fue enviada a la cola de exportacion ERP.",
   "invoiceExportedAudit": "La factura fue exportada correctamente a Business Central.",
+  "invoicePaidAudit": "La factura fue marcada como pagada.",
+  "invoiceExportErrorAudit": "La exportacion a Business Central fallo:",
   "selectCompanyToUploadWithoutOrder": "Selecciona una empresa para cargar una factura sin orden de compra.",
   "selectCompanyToEditInvoiceLines": "Selecciona una empresa para agregar o editar lineas en esta factura.",
   "draft": "Borrador",
