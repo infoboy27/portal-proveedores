@@ -1873,3 +1873,885 @@ Adsemble) queda como decisión de negocio de Jonatan, no como trabajo
 técnico pendiente.
 
 **Desplegado**: `docker compose build app && up -d`.
+
+---
+
+## 2026-08-29 (continuación) — QA completa multiempresa (Fase 1-6), ciclo end-to-end en ambos ambientes
+
+A pedido de Jonatan ("corre una sesion /qa completa en sandbox y deja el
+registro para yo ver como se ve en ambos ambientes portal proveedores y
+BC"), se corrió una sesión de QA completa sobre las 6 fases del plan
+multiempresa, con un ciclo real: subir factura → confirmar → aprobar →
+exportar a Business Central, verificando el resultado **directamente en
+BC vía API** (no solo la respuesta del portal).
+
+**Reporte completo**: `.gstack/qa-reports/qa-report-multiempresa-2026-08-29.md`
+(12 casos, evidencia visual en `.gstack/qa-reports/screenshots/04` a `08`).
+
+Puntos destacados:
+
+- **Ciclo end-to-end real**: factura `FAC-QA-2026-001` sobre la orden
+  real `CP-000212` (Adsemble, PROV-000278) → aprobada como superadmin →
+  exportada exitosamente → creada en BC sandbox `Test672026` como
+  `CF-001931`. Se confirmó contra la API de BC (mismo flujo OAuth
+  client-credentials que usa `bc-export-invoice`) que el registro existe
+  con los datos correctos (NCF `E310000000123`, vendor `PROV-000278`,
+  total `RD$1,180.00`).
+- **Investigación de una alarma que resultó ser falsa**: durante la
+  prueba, la factura quedó con `company_id` = Adsemble mientras el
+  selector del sidebar mostraba "DUCKTAPE MEDIA GROUP" en una captura
+  posterior. Se verificó por SQL que la orden CP-000212 y su vendor son
+  consistentemente de Adsemble, y que el vendor de prueba de DUCKTAPE
+  (PROV-000001) simplemente no tiene ninguna orden real sincronizada
+  todavía — el scoping por empresa (`openOrdersForSupplier` en
+  `Invoices.tsx`, filtrado por `session.supplierId`) funciona
+  correctamente.
+- **Hallazgo menor no bloqueante**: el switcher de empresa vive solo en
+  el store de Zustand (memoria) — un full page reload lo resetea a la
+  primera empresa en `vendorMappings` en vez de recordar la selección
+  anterior. Dentro de la SPA (navegación normal) funciona perfectamente
+  y sin impacto en RLS/aislamiento de datos. Queda como mejora de UX
+  opcional, no como bug.
+- Se confirmó en vivo la regla de negocio del corte de recepción de
+  facturas (día 25 del mes) bloqueando y luego aceptando la fecha
+  correcta.
+- Se verificó la columna "Empresa" (Fase 6) en Aprobaciones y Órdenes de
+  compra con la vista "Todas las empresas" activa.
+
+**Limpieza**: factura y PDF de prueba eliminados (el PDF vía la Storage
+API — `storage.objects` tiene un trigger `protect_delete` que impide
+borrado directo en la tabla); DUCKTAPE re-deshabilitada (`disabled_at`)
+para sync automático, restaurando el estado pre-prueba. La factura real
+creada en BC (`CF-001931`, estado `Draft`) se deja intacta como
+evidencia, mismo criterio que la QA anterior (`CF-001929`).
+
+**Health score: 100/100.** 0 bugs reales encontrados en esta corrida.
+
+---
+
+## 2026-08-30 — Vínculo real orden↔factura en BC ("Detalles Factura" sin poblar)
+
+Jonatan reportó, tras revisar el resultado del ciclo de QA del día
+anterior directamente en Business Central: la factura exportada aparece
+bien en Compras → Facturas de compra, pero la sección **"Detalles
+Factura"** de la orden de compra de origen (`CP-000212`) queda vacía.
+
+**Causa confirmada por código + evidencia de BC**: `bc-export-invoice`
+crea la factura con la API estándar copiando a mano cantidad/costo/item
+de cada línea de la orden ya sincronizada — mismos números, pero **sin
+ningún vínculo real**. La consulta directa a BC de la QA del día anterior
+ya lo había dejado ver sin que se interpretara entonces: la factura
+`CF-001931` tenía `"orderId": "00000000-...", "orderNumber": ""`. La API
+v2.0 marca `orderId` de solo lectura en la creación de `purchaseInvoices`
+(ya documentado en el código desde antes) y no expone en absoluto los
+campos que sí hacen el vínculo real: `"Order No."` / `"Order Line No."`
+en cada línea de la factura — los que la función nativa de BC "Obtener
+líneas de pedido" completa, y que la rutina de posteo (codeunit 90
+"Purch.-Post") lee al momento de postear para actualizar "Quantity
+Invoiced" en la orden y poblar esa sección.
+
+**Fix**: nuevo Custom API AL, `infra/business-central/src/PurchInvoiceOrderLinkAPI.al`
+(page 58005, `Adsm Purch Inv Order Link API`), bound a `Purchase Line`
+(Document Type = Invoice) — mismo patrón que `PurchInvoiceFiscalAPI.al`.
+Expone `orderNo`/`orderLineNo` editables por `SystemId`. `bc-export-invoice`
+ahora hace un PATCH por línea contra este endpoint justo después de
+crearla, con `order.order_number` (el "No." real de la orden) y
+`line.sequence` (que ya es el "Line No." interno de BC — así lo guarda
+`bc-sync-orders` desde siempre, no hizo falta agregar ninguna columna).
+No es fatal si el PATCH falla — la factura ya quedó creada y usable en
+BC, solo sin el vínculo nativo — pero se cuenta (`orderLinked` en la
+respuesta) y se loguea.
+
+**Pendiente de tu lado** (mismo proceso ya usado para los otros 4
+archivos de la extensión, ver `infra/business-central/README.md`):
+1. Confirmar `"Order No."`/`"Order Line No."` contra el Object Explorer
+   real del sandbox (`AL: Download Symbols` → tabla `Purchase Line`) —
+   son campos estándar de la app base, pero no verificados todavía contra
+   este tenant específico.
+2. `F5` para publicar la extensión actualizada en `Test672026` (login
+   interactivo de Microsoft, igual que las veces anteriores).
+3. Ampliar el permission set del `BC_CLIENT_ID` con lectura+modificación
+   sobre `Adsm Purch Inv Order Link API`.
+4. Repetir el ciclo de exportación de una factura de prueba y confirmar
+   en la orden de origen que "Detalles Factura" ya se pobló.
+
+No requiere ningún cambio adicional en Supabase ni en el frontend — el
+Edge Function ya está actualizado y listo para cuando la extensión esté
+publicada.
+
+---
+
+## 2026-08-30 (continuación) — Vínculo orden↔factura verificado en vivo, y un deploy que faltaba
+
+Jonatan publicó `Adsm Purch Inv Order Link API` en el sandbox (`F5` desde
+VS Code, log de publicación exitosa a las 10:40:44). Se corrió una
+verificación completa:
+
+1. **GET directo al nuevo endpoint** (`purchaseInvoiceOrderLinks`) →
+   HTTP 200, sin problema de permisos — el permission set del
+   `BC_CLIENT_ID` ya cubre el objeto nuevo.
+2. **Ciclo end-to-end real** (subir factura `FAC-QA-LINK-001` sobre
+   `CP-000212`, aprobar, exportar) → creada en BC como `CF-001932`, pero
+   **`orderNo`/`orderLineNo` seguían vacíos** — la línea no quedó
+   vinculada.
+3. **Causa encontrada**: el cambio en `bc-export-invoice/index.ts` de
+   esta mañana solo se había editado en el repo local — nunca se copió a
+   `/home/ubuntu/adsemble/supabase/volumes/functions/bc-export-invoice/`
+   ni se corrió `docker compose restart functions`. El Edge Function
+   real seguía corriendo el código de ayer (sin el PATCH nuevo), por eso
+   la factura se exportó bien pero sin vínculo, y sin ningún error en
+   logs (nunca se llegó a intentar).
+4. **Deploy real**: `scp` del archivo actualizado al volumen +
+   `docker compose restart functions`.
+5. **Verificación aislada del lado de BC**: PATCH manual contra
+   `purchaseInvoiceOrderLinks(...)` de la línea de `CF-001932` con
+   `{"orderNo":"CP-000212","orderLineNo":10000}` → HTTP 200, y un GET
+   posterior confirma que quedó guardado. Esto prueba que la extensión AL
+   funciona correctamente de forma aislada — el problema era 100% el
+   deploy pendiente del lado de Supabase, no el código AL ni los nombres
+   de campo (compilaron a la primera, sin necesidad de ajustar nada del
+   `PurchInvoiceOrderLinkAPI.al` original).
+
+**Confirmado, no queda pendiente**: con el Edge Function ya desplegado,
+la próxima factura que se exporte por el flujo normal (botón "Exportar
+ahora") va a hacer el PATCH automáticamente — no hace falta repetir este
+parche manual. La orden `CP-000212` en sí seguía en estado `Open` /
+`fullyReceived: false` después del vínculo (esperado: `"Quantity
+Invoiced"` y la sección "Detalles Factura" solo se actualizan cuando la
+factura se **postea** en BC — sigue pendiente el "Expense Class Code"
+manual, ver nota en `bc-export-invoice/index.ts`, así que esta factura de
+prueba quedó sin postear a propósito).
+
+**Limpieza**: factura de prueba y PDF eliminados del portal (mismo
+método de ayer — Storage API, no borrado directo). La factura real en BC
+(`CF-001932`, con el vínculo ya puesto) se deja intacta como evidencia
+para que Jonatan la revise en "Detalles Factura" de `CP-000212` una vez
+alguien la postee.
+
+**Desplegado**: extensión AL publicada por Jonatan vía VS Code (`F5`,
+sandbox `Test672026`); `scp` + `docker compose restart functions` para
+`bc-export-invoice`.
+
+---
+
+## 2026-08-31 — "Expense Class Code" resuelto: no era una regla nueva, ya existe en cada orden
+
+Jonatan preguntó qué decisión faltaba para poder postear ("que necesitamos
+para postearla? cual es la decision que falta?") y después pidió
+implementarlo ("implementemos eso que falta de expense class").
+
+**La premisa de continuación 17 (2026-08-20) estaba incompleta.** Se había
+documentado que el Expense Class Code (`DSNCod. Clasificacion Gasto`, 2
+dígitos para los reportes 606/607/608 de la DGII) era "una decisión
+contable de Adsemble" pendiente de definir, sin dato para inferirla. Antes
+de pedirle a Jonatan que inventara una regla nueva, se verificó en vivo si
+ese dato ya existía en algún lado de BC.
+
+**Sí existe — a nivel de orden de compra, no de factura.** Usando el mismo
+endpoint OData v4 legacy (`/ODataV4`, con `?company=ADSEMBLE`) que ya se
+había usado para decodificar nombres de campo en continuaciones
+anteriores, se consultó el web service `Pedido_compra_Excel` (cabecera de
+orden de compra) sobre 15 órdenes reales de ADSEMBLE: **12 ya tenían
+`DSNCod_Clasificacion_Gasto` poblado** (`"01"`, `"02"`, `"04"`), solo 3 en
+blanco (órdenes de prueba/legacy de continuaciones anteriores, ej.
+`CP-000211`). Es decir: quien arma la orden en BC (equipo de Adsemble) ya
+elige este código al crearla — el portal no tenía que inventar nada, solo
+ir a buscarlo ahí y copiarlo a la factura.
+
+**Implementado:**
+1. **`PurchOrderFiscalAPI.al`** (nuevo, page 58006) — Custom API de solo
+   LECTURA sobre `Purchase Header` (Document Type = Order), expone
+   `expenseClassCode`. Mismo campo que ya usa `PurchInvoiceFiscalAPI.al`
+   (page 58004) para facturas, solo que filtrado a órdenes — riesgo de
+   compilación bajo porque el nombre del campo ya está verificado.
+2. **`schema-v19.sql`** — columna `purchase_orders.bc_expense_class_code`.
+3. **`bc-sync-orders/index.ts`** — por cada orden sincronizada, GET
+   `/purchaseOrderFiscals({bc_id})` (no rompe el sync si falla — solo
+   queda sin ese dato, igual que antes).
+4. **`bc-export-invoice/index.ts`** — al exportar, si la orden tiene
+   `bc_expense_class_code`, se manda en el mismo PATCH que ya escribe el
+   NCF (`purchaseInvoiceFiscals`), en vez de un PATCH separado.
+
+**Pendiente (manual, mismo patrón que las extensiones anteriores):**
+Jonatan tiene que publicar la extensión (`F5` en VS Code, sube a `1.2.0.0`
+por el nuevo archivo), y luego correr `bc-sync-orders` una vez para que las
+órdenes ya sincronizadas antes de este cambio traigan el dato con
+retroactividad — no llega solo con el publish. También falta ampliar el
+permission set del `BC_CLIENT_ID` con lectura sobre
+`Adsm Purch Order Fiscal API` (ver `infra/business-central/README.md`).
+
+**Con esto, de los 5 requisitos para postear identificados en continuación
+17/18 (NCF, Expense Class Code, VAT Posting Group, Payment Method, fecha de
+posteo), los primeros dos quedan 100% automatizados por `bc-export-invoice`
+sin intervención manual — el copiado NCF ya lo estaba desde continuación
+17, el Expense Class Code se suma con este cambio. Los 3 restantes siguen
+siendo datos maestros de BC (catálogo de cuentas / vendor / fecha), fuera
+del alcance del portal.**
+
+**Verificación en vivo (mismo día, después de que Jonatan publicó la
+extensión vía `F5`, subida a `1.2.0.0`):**
+1. `GET .../purchaseOrderFiscals` sobre la empresa ADSEMBLE ya responde con
+   los mismos valores reales vistos por OData v4 legacy (`CP-000172` →
+   `"04"`, `CP-000185` → `"02"`, `CP-000190` → `"01"`, ...).
+2. Se corrió `bc-sync-orders` manualmente (el throttle normal es de 1
+   minuto) — `bc_expense_class_code` quedó poblado en las 15 órdenes de
+   Supabase con los mismos valores exactos.
+3. Prueba de escritura aislada (mismo patrón que la verificación del
+   vínculo orden↔factura): sobre `CF-001930` (factura ya exportada antes de
+   este cambio, de la orden `CP-000215`, código `"02"`), se leyó
+   `expenseClassCode` en BC (vacío, como se esperaba de una exportación
+   vieja), se hizo el mismo `PATCH` que ahora hace `bc-export-invoice`
+   automáticamente, y se confirmó por un `GET` posterior que quedó en
+   `"02"` — mismo valor que su orden de origen. Prueba el camino de
+   lectura (orden) y escritura (factura) de punta a punta contra BC real,
+   sin necesidad de generar una factura nueva.
+
+**Con esto: implementado, desplegado y verificado en vivo tanto del lado
+de Supabase (sync + export) como del lado de BC (extensión publicada,
+datos reales confirmados). Ninguna factura nueva se exportó para esta
+verificación — se reutilizó una ya existente de pruebas anteriores.**
+
+---
+
+## 2026-08-31 (continuación) — Auditoría de datos maestros + ciclo E2E completo con ambos fixes
+
+Jonatan preguntó si el proyecto está listo para pase a producción. Antes de
+contestar que sí, se corrieron 3 verificaciones concretas contra datos
+reales (no solo de prueba):
+
+**1. Vendors fuera de los 4 grupos de portal (`GASMENOR`, `RETEMPL`,
+`CPEMPL`, `CPACC`, `OTRASCXP`, 283 en total) — ¿se cuelan al portal?** No:
+0 facturas, y de los 2 con `user_vendor_mapping`, ambos son vendors de
+prueba conocidos (`V-0001`, `PROV-000283`) sin `vendor_posting_group`
+sincronizado. Sin hallazgos.
+
+**2. Completitud de datos maestros en las cuentas/vendors REALES en uso
+(no solo el caso de prueba ya corregido en continuación 18):**
+- **VAT/Gen Posting Group en cuentas**: de las 6 cuentas contables usadas
+  en órdenes reales (`2060`, `6016`, `6020`, `6102`, `6106`, `6107`), **solo
+  `6107` (la que ya se corrigió en su momento) tiene los 4 grupos
+  configurados. Las otras 5 están en blanco** — afectan 7 órdenes reales
+  entre las 15 sincronizadas (`6102`×4, `6106`×2, más una cada una de
+  `2060`/`6016`/`6020`). Cualquier factura contra esas cuentas va a fallar
+  al postear con el mismo error `"VAT Prod. Posting Group must have
+  value..."` que ya se vio antes.
+- **Payment Method Code en vendors reales**: de los 11 vendors con órdenes
+  reales en el portal, **10 lo tienen, 1 no: `PROV-003514` (GMACRO
+  DOMINICANA SRL)**.
+
+Ambos son huecos de datos maestros en BC, no del portal — se los pasé a
+Jonatan para que Adsemble los complete antes de que una factura real
+contra esas cuentas/ese vendor intente postear.
+
+**3. Ciclo 100% en vivo combinando los dos fixes de hoy (order-link +
+Expense Class Code), sobre una factura NUEVA por el flujo real del
+portal** (no una reutilizada): orden `CP-000212` (cuenta `6107`, ya
+configurada; vendor `PROV-000278`, con Payment Method configurado;
+`bc_expense_class_code = "02"`).
+
+- Subida por el proveedor (`jonathanmaria+proveedor@gmail.com`) con un PDF
+  sintético — el OCR extrajo bien fecha/número/total, pero **leyó mal el
+  NCF** (`B0200000099` → `O0200000099`, confundió B/O). Corregido a mano
+  antes de confirmar, como haría cualquier proveedor. Ver nota de OCR
+  abajo.
+- Aprobada por `l.frias@adsemble.do` (approver).
+- Exportada por `jonathanmaria@gmail.com` (superadmin) → creada en BC como
+  `CF-001933`.
+- **Verificado en BC, los 3 datos en la factura nueva sin ningún paso
+  manual**: `fiscalDocumentNo: "B0200000099"`, `expenseClassCode: "02"`,
+  y `purchaseInvoiceOrderLinks` con `orderNo: "CP-000212"` /
+  `orderLineNo: 10000`. Los dos fixes de esta sesión funcionan juntos, de
+  punta a punta, en una factura real del flujo real.
+- **Intento de posteo real** (`Microsoft.NAV.post`): rechazado —
+  `"Posting Date is not within your range of allowed posting dates"`.
+  Esto es exactamente el 3er requisito pendiente ya documentado (rango de
+  fechas de posteo abierto en BC), confirmado empíricamente esta vez, no
+  solo en teoría. **Nota operativa nueva**: el corte de recepción de
+  facturas (día 25, factura con fecha del mes siguiente) hace que esto se
+  repita cada fin de mes hasta que Adsemble abra el período contable del
+  mes siguiente en BC — no es un bug del portal, pero sí algo que el
+  equipo de contabilidad va a tener que mantener al día todos los meses
+  para que el posteo no se atore.
+
+**Nota de OCR (hallazgo del punto anterior):** `ocr-service/app.py` acepta
+cualquier letra A-Z como prefijo de NCF (`[A-Z]\d{10,12}`), pero los
+únicos prefijos reales en uso son `A`/`B` (NCF físico) y `E` (e-CF)
+—confirmado en el propio comentario del código. Acotar el regex a
+`[ABE]\d{10,12}` haría que un NCF mal leído (como el `O0200000099` de esta
+prueba) se rechace y quede en blanco para completar a mano, en vez de
+mostrarse como si estuviera bien. Cambio pendiente de confirmación de
+Jonatan (bajo riesgo, sin downside conocido).
+
+**Estado de "listos para producción" después de esto:** el ciclo
+funcional está probado de punta a punta con los fixes de hoy. Quedan 3
+huecos concretos antes de decir que sí, ninguno de código:
+1. Completar VAT/Gen Posting Group en las cuentas `2060`, `6016`, `6020`,
+   `6102`, `6106` (BC, catálogo de cuentas).
+2. Completar Payment Method Code en el vendor `PROV-003514` (BC, ficha de
+   vendor).
+3. Mantener abierto el período de posteo del mes siguiente en BC antes de
+   que empiecen a llegar facturas reales con esa fecha (proceso mensual
+   de contabilidad, no un dato puntual a corregir una vez).
+
+**OCR (mismo día):** acotado `NCF_PATTERN`/`NCF_LABEL_PATTERN` en
+`ocr-service/app.py` de `[A-Z]` a `[ABE]` (únicos prefijos reales de NCF
+dominicano) — un NCF mal leído con un prefijo inválido ahora queda vacío
+en vez de mostrarse como si estuviera bien. Desplegado (`docker compose
+build ocr-service` + `up -d`, imagen reconstruida porque el Dockerfile
+usa `COPY app.py .`, no es un mount en vivo) y verificado in-process
+(`extract_ncf` acepta `B02.../E31...`, rechaza `O02...`).
+
+---
+
+## 2026-08-31 (continuación) — Bug real de correo: Exchange/M365 reemplaza el cuerpo del template
+
+Prueba en vivo pedida por Jonatan: disparar el flujo real de "olvidaste tu
+contraseña" (`POST /recover`, el mismo público que usa Login.tsx) contra
+`jonathanmaria@gmail.com` antes de invitar a las 6 personas reales.
+
+**El envío en sí funcionó**: `POST /recover` → `200`, sin errores en
+`docker logs supabase-auth`, duración ~4.3s consistente con un round-trip
+SMTP real contra `smtp.office365.com` con la cuenta `soporte@adsemble.do`.
+Asunto y remitente correctos.
+
+**Pero el correo que llegó a Gmail (`link.png`, compartido por Jonatan) no
+es ninguno de los dos templates reales** (`recovery.html` / `invite.html`,
+ambos leídos completos del servidor para comparar) — ninguno de los dos
+tiene logo en imagen rasterizada, dirección en verde, campo "Tel:", ni
+iconos de Instagram/LinkedIn. Lo que llegó es una tarjeta de firma/contacto
+tipo "Soporte Adsemble" — **sin ningún rastro del título, párrafo o botón
+"Restablecer contraseña"** que sí están en el archivo real.
+
+**Diagnóstico (no confirmado, sin acceso para verificarlo):** todo apunta
+a una regla de firma corporativa de Exchange Online/Microsoft 365 en la
+cuenta `soporte@adsemble.do` que se aplica a TODO saliente (incluido SMTP
+autenticado desde una aplicación, no solo Outlook/OWA) — y en vez de
+agregarse debajo del cuerpo, parece estar **reemplazándolo por completo**.
+No se pudo confirmar desde este stack: el admin center de Microsoft 365
+del tenant de Adsemble está fuera de nuestro alcance.
+
+**Pendiente, bloqueando la fase de invitación real a las 6 personas:**
+1. Confirmar via "Mostrar original" en Gmail si el HTML real del template
+   está en el mensaje crudo (oculto) o si Exchange lo reemplazó del todo.
+2. Si es una regla de Exchange: alguien con acceso al M365 admin center de
+   Adsemble tiene que excluir `soporte@adsemble.do` de esa regla, o hacer
+   una excepción para correo enviado por SMTP autenticado desde
+   aplicaciones (vs. compuesto a mano en Outlook/OWA).
+
+No se invita a nadie real hasta resolver esto — no tiene sentido mandar un
+correo de invitación que tampoco va a mostrar el enlace para crear
+contraseña.
+
+**Actualización — causa real encontrada (mismo día, más tarde):** se probó
+cambiar de buzón (`soporte@adsemble.do` → `portalproveedores@adsemble.do`,
+nuevo, con su propia odisea de Conditional Access/Authenticated SMTP en
+M365 para poder autenticar) y el correo **seguía llegando sin cuerpo** —
+eso descartó que fuera algo específico del buzón viejo. Se probó mandar un
+correo armado a mano por SMTP crudo (sin pasar por GoTrue): llegó
+perfecto, con la firma de Exchange agregada DEBAJO del contenido real, sin
+comerse nada — descartando a Exchange como causante.
+
+Con eso acotado a GoTrue, se intentó interceptar el SMTP saliente con un
+catcher propio (necesitó implementar STARTTLS + certificado con SAN
+porque GoTrue rechaza conexiones sin cifrar o con certificados no
+confiables — confirma que el cliente SMTP de GoTrue es serio, no hace
+nada raro ahí) pero no se pudo completar sin una CA confiable de verdad;
+se revirtió esa parte sin dejar nada instalado. La prueba definitiva fue
+pedirle a Jonatan el código fuente crudo del correo real desde Gmail
+("Mostrar original"):
+
+**El `<body>` del correo NO era `recovery.html` — era el `index.html` del
+propio SPA del portal** (`<div id="root">`, los `<script>`/`<link>` del
+build de Vite, `<title>Portal Proveedores Adsemble</title>` en vez de
+"Recuperar contraseña..."). La firma de Exchange (marcador
+`[SIG-ADS-2026]`) se agregaba bien después, como siempre.
+
+**Causa real:** `GOTRUE_MAILER_TEMPLATES_RECOVERY`/`_INVITE` no leen la
+ruta de archivo montada directo del disco pese a estar ahí —  GoTrue las
+trata como una URL para hacer `fetch` al momento de mandar el correo. Con
+un valor tipo `/etc/auth/templates/recovery.html`, terminaba pidiendo algo
+como `https://proveedores.jfmcss.com/etc/auth/templates/recovery.html` —
+ruta que no existe en el SPA, así que el router de React devolvía su
+`index.html` de fallback, y eso es lo que se mandaba por correo. Estaba
+mal desde que se configuró (continuación del 2026-08-20) — nunca se había
+verificado el cuerpo real de un correo, solo que "llegaba".
+
+**Arreglado:** nuevo servicio `mail-templates` (`nginx:alpine`, sin
+puertos publicados, monta la misma carpeta `./volumes/auth-templates`) que
+sirve los dos HTML por HTTP dentro de la red interna del compose.
+`GOTRUE_MAILER_TEMPLATES_INVITE`/`_RECOVERY` ahora apuntan a
+`http://mail-templates/invite.html` / `http://mail-templates/recovery.html`
+en vez de la ruta de archivo. Verificado: nginx sirve el HTML real
+(confirmado el `<title>` correcto), `POST /recover` respondió `200` sin
+errores, **y Jonatan confirmó visualmente** (`resultado2.png`) que el
+correo llega completo: logo, título "Restablece tu contraseña", párrafo,
+botón azul "Restablecer contraseña", enlace de respaldo, y la firma de
+Exchange como pie normal debajo — sin pisar nada. Cerrado.
+
+## 2026-08-31 (continuación) — Cierre de sesión por inactividad, con aviso previo
+
+Jonatan preguntó si había expiración de sesión — no había ninguna: ni
+`GOTRUE_SESSIONS_TIMEBOX`/`_INACTIVITY_TIMEOUT` en el `.env` (solo
+`JWT_EXPIRY=3600`, el access token, que se renueva solo via
+`autoRefreshToken` del cliente Supabase con sus defaults), ni ningún
+mecanismo propio del frontend. En la práctica, quien hacía login una vez
+quedaba adentro indefinidamente.
+
+Pidió cierre por inactividad **con aviso en popup antes de cerrar** — eso
+solo se puede hacer del lado del cliente (GoTrue no tiene forma de avisar,
+solo de invalidar de golpe), así que se implementó ahí:
+
+**`IdleSessionGuard.tsx`** (nuevo, montado dentro de `AppShell` — solo
+corre en rutas autenticadas): 30 minutos sin actividad (mousemove,
+mousedown, keydown, scroll, touchstart) dispara un modal de aviso
+("¿Seguís ahí?") con cuenta regresiva de 60 segundos; si no se hace click
+en "Seguir conectado" (o se cierra el modal) en ese minuto, se llama
+`supabase.auth.signOut()` y `FeatureGuard` redirige solo a `/login` (ya
+redirige en cuanto `session.role` queda null, no hizo falta agregar
+navegación manual). A propósito, mientras el aviso está en pantalla, la
+actividad ambiental (mover el mouse) NO lo cancela sola -- exige el click
+explícito, para que un mouse jiggler o scroll automático no lo anulen sin
+que haya alguien real ahí.
+
+**Desplegado**: `tsc --noEmit && vite build` limpio, `docker compose
+build app && up -d` en `/home/ubuntu/adsemble/portal/` (no es checkout de
+git en el servidor, se sincronizaron los 3 archivos tocados a mano vía
+`scp`). Confirmado que el sitio en vivo sirve el bundle nuevo.
+
+## 2026-08-31 (continuación) — OCR: lineas de detalle (best-effort)
+
+Pedido de Jonatan: robustecer el OCR para que tambien capture las lineas
+de la factura (descripcion/cantidad/precio/importe), no solo
+fecha/NCF/numero/total.
+
+`invoice_lines` existe desde antes y `InvoiceDetail.tsx` ya la muestra en
+"Facturas vinculadas a esta orden" -- pero nunca se insertaba nada ahi
+(la nota de 2026-08-25 en `extract-invoice-data` lo dejo afuera a
+proposito: con `image_to_string()` -- solo texto plano, sin posicion -- no
+hay forma de saber que palabras estaban en la misma fila/columna de una
+tabla).
+
+**Implementado con `pytesseract.image_to_data()`** (trae posicion left/top
+y numero de linea por palabra, no solo texto): agrupa palabras por fila,
+descarta encabezados de tabla y filas de subtotal/ITBIS/total, y toma como
+linea de factura toda fila que termine en 1-3 tokens con forma de monto
+(cantidad/precio/importe), usando el resto como descripcion. Si no
+encuentra ninguna fila que cumpla, o encuentra mas de 25 (mas probable que
+sea ruido que una tabla real), devuelve una lista vacia -- mismo criterio
+de "fallar cerrado" que el NCF. `extract-invoice-data` inserta estas
+lineas SOLO si la factura no tiene ninguna todavia (nunca pisa lineas
+cargadas a mano).
+
+**Sigue siendo heuristico, no resuelve el problema de fondo** (formatos de
+factura muy distintos entre proveedores van a fallar) -- probado con un
+PDF sintetico de 2 lineas: capturo bien descripcion + cantidad en ambas,
+pero en una de las dos no reconocio la columna "Importe" (unitPrice/amount
+quedaron incompletos), confirmando el limite ya esperado. Sirve como
+prellenado de partida para que un admin/aprobador revise, no como dato
+confiable sin revisar.
+
+**Desplegado**: `ocr-service` reconstruido (`docker compose build` + `up
+-d`, mismo motivo que el fix de NCF -- imagen con `COPY app.py .`, no
+mount en vivo) y `extract-invoice-data` copiado + `functions` reiniciado.
+Verificado con un PDF de prueba tabular contra el servicio ya desplegado
+(no se insertó nada en producción -- se probó pegándole directo a
+`ocr-service:8080/extract`, sin pasar por una factura real).
+
+## 2026-09-01 — Faltaba Carolina Pérez en el lote de invitaciones
+
+Jonatan avisó que `c.perez@adsemble.do` (Carolina Pérez) se quedó afuera del
+lote de invitaciones de prueba. Verificado contra `user_profiles`: no
+existía ninguna cuenta con ese correo (los otros 6 sí, todos activos), así
+que no era un simple reset de password -- había que invitarla de cero.
+Preguntado el rol: **approver**, igual que l.aquino/l.frias/v.tejeda/y.medina
+(las 4 cuentas `@adsemble.do` con ese rol hoy), mismo `company_id` de
+Adsemble.
+
+Invitada vía `provisionInvitedUser` (el mismo helper que usa `invite-user`
+desde `Users.tsx`) -- desplegado como función temporal de un solo uso en el
+contenedor de `functions`, invocada una vez vía Kong con la service role key
+tomada del entorno de otro contenedor (nunca escrita a mano ni impresa), y
+borrada del servidor apenas terminó. Confirmado en `user_profiles`: fila
+creada con `role='approver'`, `active=true`, `company_id` de Adsemble.
+Dispara el mismo correo real de invitación (plantilla `invite.html` de
+marca Adsemble, ya con el fix del cuerpo aplicado) para que fije su
+contraseña.
+
+## 2026-09-01 (continuación) — Bug real: faltaba `SITE_URL` en el contenedor `functions`
+
+Al armar logins de prueba para 3 proveedores reales (Adobe, Clickable SRL,
+Asoc. Dominicana de Empresas de Comunicación) se encontró que
+`invite-user`/`reset-user-password` arman `redirectTo` como
+`${Deno.env.get("SITE_URL")}/set-password`, pero **el contenedor
+`supabase-edge-functions` nunca tenía `SITE_URL` en su `environment:`** en
+`docker-compose.yml` (sí existe en `.env`, pero no estaba mapeado a ese
+servicio -- solo al de `auth`, como `GOTRUE_SITE_URL`). Con la variable
+vacía, `redirectTo` quedaba `undefined` y GoTrue caía al `SITE_URL` propio
+(la raíz del sitio, sin `/set-password`) -- el enlace abría sesión directo
+en el dashboard sin pasar nunca por la pantalla de fijar contraseña, así
+que quien lo usaba quedaba con la cuenta activa pero **sin ninguna
+contraseña real seteada** para volver a entrar después.
+
+**Esto afecta a los 6 correos de invitación/reset + el de Carolina Pérez
+mandados esta semana** -- todos generados con el mismo código. Pendiente
+que Jonatan decida si les reenvía el reset ahora que está arreglado.
+
+**Arreglado**: agregada `SITE_URL: ${SITE_URL}` al bloque `environment:` de
+`functions` en `docker-compose.yml`, `docker compose up -d functions`.
+Verificado: un link de invitación generado después del fix trae
+`redirect_to=https://proveedores.jfmcss.com/set-password` (antes, la misma
+llamada devolvía `redirect_to=https://proveedores.jfmcss.com` a secas).
+
+**4 logins de prueba (sandbox) creados a pedido de Jonatan**, sin mandar
+ningún correo real (pidió explícitamente no invitar por correo a
+proveedores reales en sandbox) -- se generaron los links de
+invitación/recuperación directo vía `auth.admin.generateLink` (crea el
+token pero no dispara ningún envío) desde una función temporal desplegada
+y borrada en el momento, igual patrón que el alta de Carolina:
+- `sugopeca@gmail.com` (proveedor de prueba ya existente, V-0001) -- link de recuperación.
+- `jonathanmaria+adobe@gmail.com` → PROV-001705 (ADOBE, RNC 770019522, empresa Adsemble) -- alta nueva, rol supplier.
+- `admin@clickablestudio.com` → PROV-002350 (CLICKABLE SRL) -- alta nueva, rol supplier.
+- `claudiam@adecc.com.do` → PROV-000519 (ASOC. DOMINICANA DE EMPRESAS DE COMUNICACIÓN) -- alta nueva, rol supplier.
+
+Los links se le pasaron a Jonatan directo en el chat para que él se los
+reenvíe manualmente a quien vaya a probar cada rol -- no se generó ni se
+tocó ninguna contraseña en texto plano en ningún momento.
+
+**Nota**: las 3 fichas de proveedor real (Adobe, Clickable, Asoc.
+Dominicana) figuran con `status='blocked'` en la tabla `vendors` bajo las
+3 empresas (Adsemble, Ducktape Media Group, Juan Fabian) -- no se investigó
+si eso afecta algo funcional del portal (solo se usó como identificador
+para el login de prueba), queda para revisar si hace falta.
+
+## 2026-09-01 — Pedido "Key Players": items 1 y 2 (1 OC = 1 Factura, eliminar factura)
+
+Pedido formal de cambios de Key Players sobre el Vendor Portal (10 items).
+Antes de tocar código se hizo el análisis completo del repo (los 10 puntos
+que pidieron) y se resolvieron 3 bloqueos reales con Jonatan antes de
+escribir nada:
+
+1. **Hay 6 órdenes de compra en producción con más de una factura activa**
+   (una con 4) -- la regla nueva de 1:1 **aplica solo hacia adelante**, esas
+   6 quedan como excepción histórica sin tocar.
+2. **"Fecha de Emisión" vs "Fecha de Factura"**: Jonatan mandó capturas
+   reales de BC (`ordendecompra1.png`, `datosadjuntos.png`) -- son campos
+   que viven **en la Orden de Compra misma** en BC (`Fecha emisión
+   documento`, `Nº factura proveedor`, `No. Comprobante Fiscal`), no en un
+   documento de Factura separado. Esto reveló que el flujo actual
+   (`bc-export-invoice`) nunca toca esos campos -- crea una **Factura de
+   Compra separada** en BC (necesaria para postear/reportes 606-607-608).
+3. Confirmado con Jonatan: **NO se reemplaza `bc-export-invoice`** (seguiría
+   sin asiento contable/reportes fiscales si se sacara) -- se hace un paso
+   NUEVO además, que también patchea esos campos + adjunta el PDF en la
+   Orden. **Pendiente de implementar** (item 3 y 5 del pedido), dejando esta
+   nota para cuando Adsemble decida si en el futuro quiere eliminar el flujo
+   actual de Factura separada.
+
+**Implementado y verificado en vivo (items 1 y 2):**
+
+- `schema-v20.sql`: trigger `check_one_active_invoice_per_po` (BEFORE
+  INSERT en `invoices`) -- bloquea una segunda factura activa (`status !=
+  'rejected'`) sobre la misma orden. Es un TRIGGER y no un índice único a
+  propósito: un índice único fallaría al crearse contra las 6 órdenes ya
+  duplicadas; el trigger solo valida INSERTs nuevos, nunca toca datos
+  viejos.
+- Policy `scoped delete` en `invoices` (admin/superadmin sin restricción,
+  proveedor solo lo suyo y solo en `draft`/`uploaded` -- una vez "enviada"
+  a aprobación ya no es libre) + `scoped delete invoices bucket` en
+  `storage.objects` (mismo alcance) -- antes NINGUNA de las dos tenía
+  policy de DELETE, quedaba denegado por RLS por defecto.
+- Policy nueva de INSERT en `security_audit_log` (antes solo se escribía
+  desde Edge Functions con `service_role`) para que `deleteInvoice` pueda
+  registrar `invoice_deleted` desde el cliente -- acotada a ese
+  `event_type` y a `actor_user_id = auth.uid()` (nadie puede fabricar un
+  registro atribuido a otro usuario). No se usa `invoice_status_history`
+  para esto: esa tabla tiene `on delete cascade` con `invoices`, un evento
+  ahí desaparecería junto con la fila que se borra.
+- `domain.ts`: `deleteInvoice(invoiceId, changedBy)` -- borra el archivo de
+  Storage ANTES que la fila (si se borrara la fila primero, la policy de
+  Storage ya no tendría contra qué validar el `file_path` y el archivo
+  quedaría huérfano). `uploadInvoice` valida de entrada si la orden ya
+  tiene una factura activa (mensaje claro antes de subir el archivo -- el
+  trigger es la garantía real, esto es solo UX).
+- `Invoices.tsx` (`InvoiceDetail`): botón "Eliminar factura" (solo si
+  `draft`/`uploaded`, o admin/superadmin siempre) con modal de confirmación
+  con el texto exacto pedido. `InvoicesList`: el selector de "orden para
+  cargar factura" ya no ofrece órdenes que ya tienen una factura activa.
+- `Orders.tsx` (`OrderDetail`): botón de carga deshabilitado + mensaje
+  claro cuando la orden ya tiene factura asociada.
+
+**Verificado end-to-end en vivo, no solo por SQL directo**: se firmó un JWT
+real (HS256, mismo secreto que usa GoTrue) para un usuario proveedor real
+(`jonathanmaria+adobe@gmail.com`, cuenta de sandbox propia) y se ejecutaron
+las mismas llamadas que hace el frontend contra Kong/PostgREST/Storage --
+subir archivo → insertar factura → intentar una segunda sobre la misma
+orden (rechazada, HTTP 409) → borrar archivo → borrar fila → insertar de
+nuevo sobre la misma orden (ahora sí, libre otra vez). Los 7 pasos
+pasaron. Sin residuos: conteo de `invoices` antes/después igual (20).
+
+**Desplegado**: `tsc --noEmit && vite build` limpio, `docker compose build
+app && up -d` en `/home/ubuntu/adsemble/portal/`, migración aplicada
+directo a la base de producción (`schema-v20.sql`, idempotente).
+
+**Pendiente** (orden sugerido por Key Players): item 3 (patchear
+Fecha/NCF/Nº factura en la Orden de BC + item 5, adjuntar el PDF ahí
+también -- mismo API estándar `/purchaseOrders({id})` que ya usa
+`bc-sync-orders`, falta confirmar en vivo si `/attachments` está
+disponible en este tenant o hace falta AL nuevo), item 6 (filtros
+server-side) e item 7 (performance -- causa raíz ya identificada:
+`domain.ts:fetchAll()` carga TODAS las tablas completas y se re-ejecuta
+después de cada mutación, sin paginar `purchase_orders` -- mismo riesgo de
+truncado a 1000 filas que ya se encontró y arregló para `vendors`).
+
+## 2026-09-01 (continuación) — Pedido "Key Players": items 3 y 5 (BC: fecha/NCF/Nº factura en la Orden + adjuntos)
+
+Antes de escribir nada se confirmó todo contra el tenant real de BC (misma
+disciplina que ya usó este proyecto para NCF/Expense Class Code -- nunca
+adivinar), vía una función temporal de un solo uso desplegada y borrada en
+el momento:
+
+- **"Fecha emisión documento"** = el campo **estándar** `orderDate` de la
+  API v2.0 de `purchaseOrders` -- confirmado cruzando `orderDate` de
+  CP-000221 contra la captura real de Jonatan (`ordendecompra1.png`):
+  `2026-09-01` = `1/9/2026`. No necesita ninguna extensión AL.
+- **"Nº factura proveedor"** = campo estándar de BC `Vendor Invoice No.`
+  (`Vendor_Invoice_No` en el `$metadata` legacy), pero NO expuesto por la
+  API v2.0 estándar -- necesita AL.
+- **NCF** = `DSNNo. Comprobante Fiscal`, el mismo campo que ya usa
+  `PurchInvoiceFiscalAPI.al` para facturas -- confirmado que también existe
+  sobre `Document Type = Order` (misma tabla `Purchase Header`).
+- **Adjuntos**: `/purchaseOrders({id})/attachments` **ya funciona** en la
+  API estándar (probado en vivo con un GET real, devolvió `{value: []}`) --
+  no hace falta AL para leerlos ni para escribirlos (mismo mecanismo que
+  `bcAttachFile` ya usa con éxito para facturas).
+
+**Implementado:**
+
+- `infra/business-central/src/PurchOrderFiscalAPI.al` (page 58006):
+  extendida -- ya no es de solo lectura, agrega `vendorInvoiceNumber` y
+  `fiscalDocumentNo`, `ModifyAllowed = true`. `app.json` a `1.3.0.0`.
+  **Pendiente de que Jonatan la publique en el sandbox vía VS Code** (F5) --
+  sin esto, el paso nuevo de `bc-export-invoice` falla silenciosamente (no
+  fatal, ver abajo) hasta que se publique. `README.md` actualizado con el
+  permission set nuevo necesario (Modify sobre esta página, antes solo
+  Read).
+- `_shared/bc-client.ts`: `bcListAttachments`/`bcGetAttachmentContent`
+  (lectura de `/attachments`, sub-recurso estándar, sirve para cualquier
+  documento que los soporte).
+- `bc-export-invoice`: nuevo paso 3.5, **además** del flujo existente (no
+  lo reemplaza -- confirmado con Jonatan, la Factura de Compra separada
+  sigue siendo lo único que postea/alimenta 606-607-608, con nota dejada
+  en el código por si en el futuro se decide eliminarla). Patchea
+  `orderDate` (estándar) + `vendorInvoiceNumber`/`fiscalDocumentNo`
+  (`purchaseOrderFiscals`, custom) + adjunta el mismo PDF en la Orden. A
+  propósito **no fatal**: si falla (ej. la extensión AL todavía no está
+  publicada), la factura real igual queda creada en BC sin marcarse
+  `export_error` -- se reporta `orderSynced: false` en la respuesta.
+  `Exports.tsx` muestra el resultado.
+- `bc-order-attachments` (función nueva): lista y descarga/muestra los
+  adjuntos de una orden. Mismo patrón de autorización que
+  `invite-user`/`delete-user` (revalida rol/alcance a mano contra la base
+  con `service_role`, igual que "scoped read" de `purchase_orders`) --
+  NUNCA confía en lo que mande el cliente.
+- `Orders.tsx` (`OrderDetail`): sección nueva "Datos adjuntos" (nombre,
+  tipo, tamaño, Ver/Descargar) -- no se persiste en Supabase, se consulta
+  a BC en vivo cada vez que se abre el detalle de una orden.
+
+**Verificado en vivo (no solo en teoría)**, con un JWT real para dos
+proveedores de sandbox reales:
+- `admin@clickablestudio.com` (dueño real de CP-000221) → lista sus
+  propios adjuntos: `200 {"ok":true,"attachments":[]}` (vacío, coincide con
+  la captura de Jonatan `datosadjuntos.png` que también mostraba 0
+  adjuntos para esa misma orden).
+- `jonathanmaria+adobe@gmail.com` (otro proveedor) contra la MISMA orden
+  de Clickable → `403 {"error":"No tenes acceso a esta orden de compra"}`
+  -- aislamiento entre proveedores confirmado, no solo asumido.
+- `bc-export-invoice` invocado con un `invoiceId` inexistente -- confirma
+  que el archivo carga y corre sin error de sintaxis Deno (falla limpio en
+  "Factura no encontrada", como se espera, sin tocar BC).
+
+**Desplegado**: `tsc --noEmit && vite build` limpio, `docker compose build
+app && up -d` (frontend); `_shared/bc-client.ts`, `bc-export-invoice`,
+`bc-order-attachments` copiados a `/home/ubuntu/adsemble/supabase/volumes/
+functions/` + `docker compose restart functions`.
+
+**Publicado y verificado en vivo (2026-09-01, mismo día)**: Jonatan publicó
+`1.3.0.0` en el sandbox vía VS Code (log de publish exitoso). Se confirmó
+en vivo, contra CP-000221 real:
+- GET `/purchaseOrderFiscals` ya trae `vendorInvoiceNumber`/
+  `fiscalDocumentNo` (vacíos, coincide con la orden real).
+- PATCH con un valor de prueba (`"TEST-VERIFY-AL"`) escribió correctamente
+  -- el permission set ya tenía Modify sin necesitar ajuste manual extra.
+- Revertido de inmediato al valor original (`""`) -- la orden real quedó
+  sin ningún rastro de la prueba.
+
+Con esto, el paso 3.5 de `bc-export-invoice` ya tiene efecto real la
+próxima vez que se exporte una factura de verdad -- no hizo falta ninguna
+prueba de exportación real (eso sí crea un documento real en BC, se dejó
+para cuando Jonatan lo pida explícitamente).
+
+**Pendiente**: items 6 (filtros server-side) y 7 (performance, causa raíz
+ya identificada) del pedido de Key Players.
+
+## 2026-09-01 (continuación) — Pedido "Key Players": items 6 y 7 (filtros server-side + performance)
+
+**Medido antes de tocar nada** (pedido explícito de Key Players: métricas
+antes/después): conteo real de filas por tabla —
+`invoices`=20, `purchase_orders`=21, `vendors`=**10.441**, resto <40. Se
+replicó `fetchAll()` exacto (mismas queries, mismo usuario real) contra el
+servidor: **2.339ms**, con `vendors` solo (11 requests paginados de 1000
+filas c/u) explicando casi todo ese tiempo. `fetchAll()` corre no solo al
+entrar sino **después de cada mutación de toda la app** (aprobar, subir,
+confirmar, exportar, eliminar, etc.) -- esta es la causa raíz real de "el
+portal está lento", no algo puntual de una pantalla.
+
+**Arreglado (item 7):**
+
+- `domain.ts:fetchAll()` -- `vendors` ya NO se trae completa. Se calculan
+  los `vendor_id` realmente referenciados por las invoices/órdenes recién
+  cargadas y se pide `vendors` con `.in("id", [...])` -- normalmente unas
+  pocas decenas, nunca la tabla entera. La única pantalla que de verdad
+  necesita navegar TODOS los proveedores (`Suppliers.tsx`) ahora tiene su
+  propio fetch independiente (`fetchAllSuppliers`, mismo helper de
+  paginación de siempre), pedido una sola vez al entrar a esa pantalla, no
+  en cada mutación del resto de la app.
+- `purchase_orders` (antes `.select("*")` sin paginar) pasa a usar el mismo
+  `fetchAllRows` que ya protegía a `vendors` -- salvaguarda contra el mismo
+  truncado silencioso a 1000 filas que ya se encontró antes (hoy 21 filas,
+  sin impacto real todavía, es prevención).
+- **Medido después**: réplica exacta de la nueva lógica (mismo usuario) --
+  **178ms** (antes 2.339ms) -- **13x más rápido**, medido servidor-a-servidor
+  (un navegador real ganaría más todavía, al sacarse de encima 10 idas y
+  vueltas de latencia de internet que ya no existen).
+- No se tocó el patrón de "fetchAll() después de cada mutación" en sí
+  (refetchear todo tras aprobar/subir/etc.) -- ese es un cambio mucho más
+  grande que toca ~15 funciones de `domain.ts` y las páginas que dependen
+  de ellas; se identifica acá como el próximo paso de performance más
+  grande disponible, pero se deja fuera de este pase por alcance
+  (`cambios mínimos` pedido explícitamente).
+
+**Implementado (item 6 -- filtros server-side de Órdenes de Compra):**
+
+- `rpc_purchase_order_stats` (`schema-v21.sql`, `security invoker`): las 4
+  tarjetas de arriba (activas/borradores/pendientes/monto total) ya no se
+  calculan sumando sobre filas ya traídas al frontend (no tendría sentido
+  con paginación server-side) -- se calculan en la base, respetando RLS
+  automáticamente (un proveedor solo ve el agregado de lo suyo).
+- `domain.ts:fetchPurchaseOrdersPage` -- pagina (20 por página) y filtra en
+  la base: número de orden (`ilike`), estado, rango de fechas, empresa, y
+  proveedor (`vendor_id`, solo para admin/superadmin/approver -- el
+  selector ni siquiera aparece para un proveedor). El aislamiento de
+  proveedor sigue siendo 100% RLS ("scoped read", sin cambios) -- nunca se
+  arma un filtro de `vendor_id` a mano para `supplier`/`service_uploader`.
+- `Orders.tsx` (`OrdersList`): reescrita para usar lo de arriba en vez del
+  store global + filtro en memoria. Buscador con debounce de 350ms (no
+  dispara una consulta por tecla). Agrega paginación (Anterior/Siguiente) y
+  los filtros de fecha/proveedor que pedía el punto 6.
+
+**Verificado en vivo con 5 casos reales** (JWT real para 3 cuentas
+distintas: superadmin, Clickable, Adobe):
+1. Admin filtrando por `order_number=ilike.*CP-000221*` → solo esa orden.
+2. Stats de admin sin filtro → 21 activas, RD$673.834,13 (coincide con el
+   total real de todas las órdenes).
+3. Clickable pidiendo TODAS las órdenes sin ningún filtro → RLS le
+   devuelve solo sus 2 propias (CP-000216, CP-000221).
+4. Stats de Clickable → refleja solo sus 2 órdenes (RD$47.861,98), no el
+   total global -- confirma que el RPC `security invoker` respeta RLS de
+   verdad, no solo en la lista.
+5. **Adobe intentando filtrar explícitamente por el `vendor_id` de
+   Clickable** (`?vendor_id=eq...`) → devuelve vacío -- RLS bloquea el
+   intento aunque el cliente lo pida directo, no hace falta que el
+   frontend "se porte bien" (item 8 del pedido: nunca confiar en lo que
+   mande el cliente).
+
+**Desplegado**: `tsc --noEmit && vite build` limpio, `docker compose build
+app && up -d`; `rpc_purchase_order_stats` aplicado directo a producción +
+`NOTIFY pgrst, 'reload schema'` (PostgREST necesita el aviso para exponer
+una función RPC nueva sin reiniciar el contenedor).
+
+**Con esto, los 7 puntos de Prioridad 1 y 2 del pedido de Key Players
+quedan implementados y verificados en vivo.** Queda pendiente Prioridad 3
+(QA/regression del flujo completo) si Jonatan quiere una pasada dedicada, y
+el hallazgo más grande de performance que se deja documentado pero sin
+tocar: sacar el patrón de "`fetchAll()` completo después de cada mutación"
+del resto de la app (Dashboard, Approvals, Payments, Invoices, Companies) --
+mismo tipo de fix que se le acaba de hacer a Orders, pero mucho más
+alcance para hacerlo bien en un solo pase.
+
+## 2026-09-01 (continuación) — Ronda de QA (Prioridad 3, pedido Key Players)
+
+Prioridad 3 del pedido: pruebas de flujo completo, permisos entre
+proveedores, eliminación/reemplazo, 1 factura por orden, adjuntos,
+filtros, y regresión. Se corrió en vivo (no simulado) contra el sandbox
+real, con JWT reales para 3 cuentas distintas (Adobe/proveedor,
+Clickable/otro proveedor, superadmin), reproduciendo exactamente las
+llamadas que hace el frontend (Storage + PostgREST + Edge Functions),
+sobre CP-000218 (Adobe, la única orden de los proveedores de prueba sin
+ninguna factura activa todavía).
+
+**Hallazgo real antes de empezar** (revisando `bc-export-invoice` para
+poder probar el flujo completo): a diferencia de
+`invite-user`/`delete-user`/`reset-user-password`/`bc-order-attachments`,
+esta función **nunca validaba quién la llama** -- cualquiera con la clave
+`anon` (sin sesión de aprobador) podía invocarla directo y crear una
+factura real en BC. **Arreglado** antes de seguir: mismo patrón que el
+resto (exige Bearer token, valida rol admin/superadmin/approver).
+
+**Secuencia probada (18 de 19 pasos, ver el que faltó abajo):**
+
+1. Subir factura equivocada → detectar el error → eliminarla (archivo +
+   fila) → la orden queda libre de nuevo → subir la correcta. Con la
+   equivocada todavía activa, un segundo intento de carga fue rechazado
+   con `409` por el trigger de 1 OC = 1 Factura.
+2. Completar número/fecha/total → confirmar para aprobación (Adobe, dueño
+   real). Superadmin aprueba.
+3. **Exportar sin token → `401`. Exportar como Clickable (proveedor
+   ajeno) → `403`** (confirma el fix de arriba). Exportar como
+   superadmin → **funcionó de punta a punta**: factura real creada en BC
+   (`CF-001936`), 2 líneas copiadas y vinculadas a la orden,
+   `orderSynced: true` -- confirmado que el paso nuevo (item 3) también
+   escribió los datos en la Orden de Compra misma, no solo en la factura
+   separada.
+4. Adjuntos de la orden: `bc-order-attachments` ya lista el PDF recién
+   adjuntado (`correcta.pdf`) -- prueba real de round-trip del item 5, no
+   solo lectura de una lista vacía como las pruebas anteriores.
+5. Aislamiento: Clickable no puede ver los adjuntos de la orden de Adobe
+   (`403`), no puede borrar la factura de Adobe (0 filas afectadas por
+   RLS), y ni siquiera Adobe puede borrar su propia factura una vez
+   aprobada (0 filas -- `scoped delete` solo permite draft/uploaded).
+6. Filtros: búsqueda por número de orden sigue funcionando después de
+   todos los cambios de hoy.
+
+**El paso que falló, y el hallazgo más importante de la ronda**: en el
+paso 2 (regresión de roles), **Adobe -- un proveedor -- pudo llamar
+`rpc_update_invoice_status` con `p_status='approved'` sobre su propia
+factura, y la aprobación se aplicó de verdad**. Investigado: la función es
+`SECURITY DEFINER` (necesario para que un aprobador pueda tocar facturas
+de otros proveedores) y por eso corre **sin la RLS de `invoices` de por
+medio** -- nunca reimplementaba esa validación de rol por su cuenta.
+Además confiaba en `p_changed_by` sin verificar que fuera realmente quien
+llama (se podía atribuir el cambio a otro usuario en la auditoría).
+
+**Arreglado** (`schema-v22.sql`): el RPC ahora exige `p_changed_by =
+auth.uid()` (nunca otro usuario) y que quien llama sea admin/superadmin, o
+approver de la misma empresa de la factura -- mismo criterio que ya usa
+`scoped update` para approver. **Reverificado en vivo**: Adobe bloqueado
+con el mensaje de rol, intento de suplantación (`p_changed_by` de otro
+usuario) bloqueado con su propio mensaje, y el camino legítimo
+(superadmin) sigue funcionando sin cambios.
+
+**Nota**: este hallazgo es sobre código **preexistente**, no algo
+introducido esta sesión -- es exactamente el tipo de cosa que la ronda de
+pruebas de Prioridad 3 estaba pensada para encontrar.
+
+**Queda como evidencia real en el sandbox** (a propósito, no se limpió):
+la factura de prueba `QA-E2E-001` (`invoices.id=78bc2afe-8ce9-4a3b-a4be-
+11147a1c6a05`) sobre CP-000218, ya `processed`, con su factura real
+vinculada en BC (`CF-001936`) y el adjunto `correcta.pdf` en la orden --
+es la prueba tangible de que todo el flujo de items 1, 2, 3, 5 y 8
+funciona de punta a punta. CP-000218 ya no está "limpia" (tiene 1 factura
+activa) para futuras pruebas ad-hoc con la cuenta de Adobe.
+
+**Desplegado**: `bc-export-invoice` (fix de autorización) y
+`rpc_update_invoice_status` (`schema-v22.sql`, fix de rol +
+suplantación) -- ambos aplicados y verificados en vivo contra producción.
