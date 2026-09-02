@@ -1,7 +1,7 @@
 // Sincroniza ordenes de compra BC -> Supabase (solo lectura del lado de BC).
 // Invocacion manual/programada — no la llama el frontend. Ver plan Fase A.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { bcGetAll } from "../_shared/bc-client.ts";
+import { bcGet, bcGetAll } from "../_shared/bc-client.ts";
 import { getActiveCompanies } from "../_shared/companies.ts";
 import { markRan, shouldRun } from "../_shared/sync-throttle.ts";
 
@@ -29,6 +29,25 @@ interface BcPurchaseOrderLine {
   directUnitCost: number;
   amountIncludingTax: number;
   taxCode: string;
+}
+
+interface BcPurchaseOrderFiscal {
+  expenseClassCode: string | null;
+}
+
+// "Expense Class Code" (DSNCod. Clasificacion Gasto) es de solo lectura del
+// lado del portal: quien arma la orden en BC ya lo elige al crearla (ver
+// PurchOrderFiscalAPI.al). No falla la orden completa si esta llamada
+// falla (extension no publicada todavia, campo vacio en ordenes viejas,
+// etc.) -- solo queda sin ese dato, igual que antes de este cambio.
+async function fetchExpenseClassCode(bcCompanyId: string, orderBcId: string): Promise<string | null> {
+  try {
+    const fiscal = await bcGet<BcPurchaseOrderFiscal>(bcCompanyId, `/purchaseOrderFiscals(${orderBcId})`, "custom");
+    return fiscal.expenseClassCode || null;
+  } catch (err) {
+    console.error(`No se pudo leer Expense Class Code de la orden ${orderBcId}: ${err}`);
+    return null;
+  }
 }
 
 const STATUS_MAP: Record<string, string> = {
@@ -110,6 +129,8 @@ Deno.serve(async () => {
 
         const { data: existingOrder } = await db.from("purchase_orders").select("id").eq("bc_id", order.id).maybeSingle();
 
+        const expenseClassCode = await fetchExpenseClassCode(company.bcCompanyId, order.id);
+
         const orderRow = {
           company_id: company.id,
           vendor_id: vendorId,
@@ -118,6 +139,7 @@ Deno.serve(async () => {
           amount: order.totalAmountIncludingTax,
           status: STATUS_MAP[order.status] ?? "open",
           bc_id: order.id,
+          bc_expense_class_code: expenseClassCode,
         };
 
         let orderId: string;
