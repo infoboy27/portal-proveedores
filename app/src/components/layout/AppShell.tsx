@@ -5,6 +5,7 @@ import { useTranslation } from "@/i18n";
 import { supabase } from "@/lib/supabase";
 import { ROLE_FEATURES } from "@/routes/FeatureGuard";
 import { Select } from "@/components/ui/Select";
+import { IdleSessionGuard } from "@/components/IdleSessionGuard";
 import logoAdsemble from "@/assets/logo-adsemble.jpg";
 
 const NAV_ITEMS: { to: string; labelKey: string; feature?: string }[] = [
@@ -36,6 +37,7 @@ export function AppShell() {
 
   return (
     <div className="min-h-screen bg-slate-50">
+      <IdleSessionGuard />
       <div className="flex">
         <aside className="hidden w-64 shrink-0 border-r border-slate-200 bg-white/80 p-4 md:block">
           <img src={logoAdsemble} alt="Adsemble" className="mb-4 h-10 w-auto px-2" />
