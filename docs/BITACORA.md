@@ -3070,3 +3070,54 @@ usarse para datos.
 **Fase 1 cerrada.** Lo único que queda pendiente para el corte real es lo
 que ya estaba identificado como bloqueador de BC (extensión sin publicar
 en Production) y las Fases 2/3 — no infraestructura.
+
+---
+
+## 2026-09-02 (continuación) — Fase 2 del corte a producción: extensión AL publicada en Production
+
+**Primer intento, `AL: Download Symbols` contra Production, falló**:
+`Internal Server Error` para los 4 paquetes de referencia
+(`Application`, `System`, `Adsemble Liquid Base`, `DSLocalization`).
+Diagnóstico inicial (correcto pero insuficiente): `app.json` pedía
+versiones exactas que no existen en Production (`application: 27.5.0.0`
+cuando Production corre `28.4.x`; `DSLocalization: 1.1.2.64` cuando
+Production tiene instalada la `1.1.2.66`) — confirmado en vivo contra
+`api/microsoft/automation/v2.0/.../extensions` de cada entorno (no
+adivinado), que de paso reveló que el valor viejo del repo para
+`DSLocalization` en el sandbox (`1.1.2.64`) ya estaba desactualizado
+frente al real (`1.1.2.65`) sin que nadie lo hubiera notado.
+
+**`app.json` corregido a las versiones reales de Production
+(`28.4.0.0` / `1.1.2.66`) — el error persistió, idéntico**, incluso
+después de `AL: Clear Credentials Cache` + reautenticación completamente
+fresca (3 intentos en total, mismo resultado exacto). Esa consistencia
+descartó tanto la hipótesis de versión como la de credenciales viejas —
+apunta a que **Production tiene deshabilitada la conexión de desarrollo
+directa** por política del tenant (patrón común en tenants gestionados),
+no a un permiso puntual de un usuario.
+
+**Camino alternativo, decidido con Jonatan vía pregunta explícita**
+("Compilar contra el sandbox y subir el .app a mano"): `app.json` vuelto
+a los valores del sandbox (`27.5.0.0` / `1.1.2.65`, donde `Download
+Symbols` y la compilación sí funcionan), compilado con `AL: Package`
+(sin publicar ni depurar) → `Adsemble_Adsemble Vendor Portal API
+Extensions_1.3.0.0.app` generado localmente → Jonatan lo subió a mano en
+Production vía **Extension Management → Upload Extension** (interruptor
+de confirmación PTE + Implementar). Instalación exitosa confirmada por
+Jonatan.
+
+**Verificado en vivo, no solo la instalación**:
+- `isInstalled: true` confirmado contra
+  `api/microsoft/automation/v2.0/.../extensions` de Production.
+- `GET purchaseOrderFiscals` contra Production: `404` → **`200`**.
+- **Escritura real probada** (no solo lectura): `PATCH` sobre
+  `vendorInvoiceNumber` de una orden real (`CP-000123`), mismo valor que
+  ya tenía (`"NA"`, sin cambiar nada) → **`200`**. El permiso de
+  modificación del `BC_CLIENT_ID` ya estaba bien configurado en
+  Production, no hizo falta crear/ampliar el permission set aparte
+  (paso que el plan original daba por necesario).
+
+**Fase 2 cerrada.** Documentado el flujo completo (versión por entorno,
+diagnóstico del endpoint de desarrollo bloqueado, compilar+subir a mano)
+en `infra/business-central/README.md` para la próxima vez que haga
+falta republicar.
