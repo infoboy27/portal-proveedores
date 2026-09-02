@@ -9,10 +9,27 @@
 // OCR — con Tesseract puro (texto plano, sin bounding boxes) el parseo de
 // tablas es poco confiable entre formatos de proveedor distintos. Se dejo
 // fuera a proposito en vez de entregar algo poco confiable.
+//
+// Actualizado (2026-08-31, pedido de Jonatan): ocr-service ahora intenta
+// extraerlas con pytesseract.image_to_data() (heuristica de filas/columnas
+// por posicion, ver comentario en app.py) y las devuelve en `lines`. Sigue
+// siendo best-effort -- por eso solo se insertan si la factura TODAVIA no
+// tiene ninguna linea (nunca pisa lineas ya cargadas a mano por un admin/
+// aprobador via invoiceLinesHint) y si el propio ocr-service no encontro
+// nada quedan simplemente vacias, igual que fecha/NCF/total cuando el OCR
+// no detecta nada.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 interface ExtractRequest {
   invoiceId: string;
+}
+
+interface OcrLine {
+  description: string;
+  quantity: number | null;
+  unitPrice: number | null;
+  amount: number;
+  sequence: number;
 }
 
 interface OcrResult {
@@ -22,6 +39,7 @@ interface OcrResult {
   invoiceTaxNumber?: string | null;
   invoiceNumber?: string | null;
   totalAmount?: number | null;
+  lines?: OcrLine[];
   error?: string;
 }
 
@@ -46,7 +64,7 @@ Deno.serve(async (req: Request) => {
     const db = admin();
     const { data: invoice, error: invErr } = await db
       .from("invoices")
-      .select("id, file_path, filename, invoice_date, invoice_tax_number, invoice_number, total_amount")
+      .select("id, company_id, file_path, filename, invoice_date, invoice_tax_number, invoice_number, total_amount")
       .eq("id", body.invoiceId)
       .single();
     if (invErr || !invoice) throw new Error(`Factura no encontrada: ${invErr?.message}`);
@@ -96,6 +114,35 @@ Deno.serve(async (req: Request) => {
       if (updateErr) throw new Error(`No se pudo guardar lo extraido: ${updateErr.message}`);
     }
 
+    // Lineas de detalle: solo si el OCR encontro algo Y la factura todavia
+    // no tiene ninguna -- nunca pisa lineas ya cargadas a mano (ver nota
+    // arriba). No es fatal si falla: la factura queda como estaba, igual
+    // que el resto de esta funcion.
+    let linesInserted = 0;
+    if (ocr.lines && ocr.lines.length > 0) {
+      const { count: existingLines } = await db
+        .from("invoice_lines")
+        .select("id", { count: "exact", head: true })
+        .eq("invoice_id", invoice.id);
+      if (!existingLines) {
+        const rows = ocr.lines.map((l) => ({
+          invoice_id: invoice.id,
+          company_id: invoice.company_id,
+          description: l.description,
+          quantity: l.quantity,
+          price: l.unitPrice,
+          amount: l.amount,
+          sequence: l.sequence,
+        }));
+        const { error: linesErr } = await db.from("invoice_lines").insert(rows);
+        if (linesErr) {
+          console.error(`No se pudieron guardar las lineas extraidas: ${linesErr.message}`);
+        } else {
+          linesInserted = rows.length;
+        }
+      }
+    }
+
     return new Response(
       JSON.stringify({
         ok: true,
@@ -104,6 +151,7 @@ Deno.serve(async (req: Request) => {
           invoiceTaxNumber: ocr.invoiceTaxNumber,
           invoiceNumber: ocr.invoiceNumber,
           totalAmount: ocr.totalAmount,
+          linesInserted,
         },
       }),
       { headers: { "Content-Type": "application/json" } },

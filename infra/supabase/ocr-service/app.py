@@ -6,14 +6,27 @@ from flask import Flask, request, jsonify
 from pdf2image import convert_from_bytes
 from PIL import Image
 import pytesseract
+from pytesseract import Output
 
 app = Flask(__name__)
 
 # NCF (Numero de Comprobante Fiscal, DGII Rep. Dominicana):
 # e-CF actual: letra E + 2 digitos de tipo + 10 digitos = 13 caracteres (ej. E310000000045)
 # NCF fisico antiguo: letra A/B + 2 digitos de serie + 8 digitos = 11 caracteres (ej. B0100000001)
-NCF_PATTERN = re.compile(r"\b[A-Z]\d{10,12}\b")
-NCF_LABEL_PATTERN = re.compile(r"(?:NCF|Comprobante\s+Fiscal)[^\n]{0,40}?([A-Z]\d{10,12})", re.IGNORECASE)
+#
+# Acotado a "ABE" (2026-08-31, encontrado en una prueba en vivo): antes
+# aceptaba cualquier letra A-Z como prefijo. Tesseract confundio "B" con "O"
+# en un NCF de prueba (B0200000099 -> O0200000099) y el patron viejo lo
+# aceptaba igual, sin distinguir un OCR malo de un NCF real -- quedaba en el
+# formulario como si estuviera bien. Como los unicos prefijos reales que
+# emite la DGII son A/B (fisico) y E (e-CF), acotar el alfabeto hace que un
+# prefijo invalido (una letra que no es A/B/E) directamente no matchee, y el
+# campo quede vacio para que el proveedor lo complete a mano -- fallar
+# cerrado en vez de fallar silencioso. No corrige ambiguedades DENTRO del
+# alfabeto valido (ej. una E mal leida como B no se detecta), pero cubre el
+# caso mas comun de letras fuera de ese conjunto.
+NCF_PATTERN = re.compile(r"\b[ABE]\d{10,12}\b")
+NCF_LABEL_PATTERN = re.compile(r"(?:NCF|Comprobante\s+Fiscal)[^\n]{0,40}?([ABE]\d{10,12})", re.IGNORECASE)
 
 DATE_LABEL_PATTERN = re.compile(r"Fecha[^\n]{0,20}?(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})", re.IGNORECASE)
 DATE_PATTERN = re.compile(r"\b(\d{1,2})[/\-](\d{1,2})[/\-](\d{2,4})\b")
@@ -140,6 +153,88 @@ def extract_total(text: str) -> float | None:
     return priority_hit if priority_hit is not None else fallback_hit
 
 
+# Lineas de detalle (2026-08-31, pedido de Jonatan para poblar invoice_lines
+# -- hoy la tabla existe y la UI ya la muestra en InvoiceDetail, pero nunca
+# se inserta nada porque la nota original de 2026-08-25 la dejo afuera a
+# proposito: con solo el texto plano de image_to_string() no hay forma de
+# saber que palabras estaban en la misma fila/columna de una tabla.
+#
+# Esto NO resuelve ese problema de fondo -- sigue siendo heuristico y va a
+# fallar en formatos de factura raros -- pero usa pytesseract.image_to_data()
+# en vez de image_to_string(): trae la posicion (left/top) y el numero de
+# linea de CADA palabra, lo que alcanza para reconstruir filas (agrupando
+# por line_num) y ordenarlas de arriba a abajo. Con eso, una fila se toma
+# como linea de factura solo si:
+#   1. No es un encabezado de tabla ("Descripcion" + "Cantidad"/"Precio").
+#   2. No contiene ninguna palabra de TOTAL_EXCLUDE_KEYWORDS ni "total"
+#      (para no capturar subtotal/ITBIS/etc. como si fueran una linea mas).
+#   3. Termina en 1 a 3 tokens que parecen montos (Cantidad, Precio Unit.,
+#      Importe) -- el resto de la fila se toma como descripcion.
+# Si una factura no tiene NINGUNA fila que cumpla esto (formato distinto,
+# foto de mala calidad, factura sin tabla) se devuelve una lista vacia en
+# vez de inventar algo -- mismo criterio de "fallar cerrado" que el resto
+# de este archivo. Tambien se descarta todo si salen mas de 25 lineas: a
+# esa altura es mucho mas probable que sea ruido (texto suelto de la
+# factura mal agrupado) que una tabla real de esa longitud.
+_MONEY_TOKEN = re.compile(r"^(?:RD\$|US\$|\$)?\d[\d.,]*\d$|^\d$")
+_HEADER_HINTS = ("descripcion", "concepto", "detalle")
+_HEADER_HINTS_2 = ("cantidad", "precio", "importe", "monto", "unit")
+
+
+def extract_lines(image: Image.Image) -> list[dict]:
+    data = pytesseract.image_to_data(image, lang="spa", output_type=Output.DICT)
+    rows: dict[tuple[int, int, int], list[dict]] = {}
+    for i in range(len(data["text"])):
+        word = data["text"][i].strip()
+        if not word:
+            continue
+        key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+        rows.setdefault(key, []).append({"text": word, "left": data["left"][i], "top": data["top"][i]})
+
+    ordered_rows = sorted(rows.values(), key=lambda words: min(w["top"] for w in words))
+
+    result: list[dict] = []
+    for words in ordered_rows:
+        tokens = [w["text"] for w in sorted(words, key=lambda w: w["left"])]
+        row_text = " ".join(tokens)
+        lower = row_text.lower()
+        if len(row_text) < 3:
+            continue
+        if any(kw in lower for kw in TOTAL_EXCLUDE_KEYWORDS) or "total" in lower:
+            continue
+        if any(h in lower for h in _HEADER_HINTS) and any(h in lower for h in _HEADER_HINTS_2):
+            continue
+
+        tail: list[str] = []
+        idx = len(tokens) - 1
+        while idx >= 0 and _MONEY_TOKEN.match(tokens[idx]):
+            tail.insert(0, tokens[idx])
+            idx -= 1
+        if not tail:
+            continue
+
+        description = " ".join(tokens[: idx + 1]).strip(" -:")
+        if len(description) < 3:
+            continue
+
+        amounts = [a for a in (_normalize_amount(t) for t in tail) if a is not None]
+        if not amounts:
+            continue
+
+        entry = {"description": description, "quantity": None, "unitPrice": None, "amount": amounts[-1]}
+        if len(amounts) >= 3:
+            entry["quantity"], entry["unitPrice"] = amounts[0], amounts[1]
+        elif len(amounts) == 2:
+            entry["quantity"] = amounts[0]
+        result.append(entry)
+
+    if len(result) > 25:
+        return []
+    for i, entry in enumerate(result, start=1):
+        entry["sequence"] = i
+    return result
+
+
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({"ok": True, "service": "ocr-service"})
@@ -183,6 +278,7 @@ def extract():
             "invoiceTaxNumber": extract_ncf(text),
             "invoiceNumber": extract_invoice_number(text),
             "totalAmount": extract_total(text),
+            "lines": extract_lines(image),
         }
     )
 
