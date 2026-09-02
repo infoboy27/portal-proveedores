@@ -2937,3 +2937,47 @@ pregunta explícita -- "Borrar todo"):
 
 **Desplegado**: `bc-sync-orders` (solo backend, sin cambios de frontend)
 copiado al servidor y `docker compose restart functions`.
+
+---
+
+## 2026-09-02 (continuación) — Ronda de QA en el portal real (superadmin, navegador)
+
+Jonatan pidió `/qa`. Login sin password (magic link admin), recorridas las
+11 secciones del nav como superadmin real contra `proveedores.jfmcss.com`.
+4 bugs reales encontrados y corregidos, cada uno desplegado y
+re-verificado en vivo (capturas antes/despues en
+`.gstack/qa-reports/screenshots/`, reporte completo en
+`.gstack/qa-reports/qa-report-proveedores-jfmcss-com-2026-09-02.md`):
+
+1. **14 claves de `es.json` en ingles pese a existir traduccion Spanish**
+   (nav "Invoices"/"Users"/"Suppliers", tarjetas del Dashboard
+   "Recent invoices"/"Company context"/etc.) -- confirmado que otras ~80
+   claves en ingles del mismo archivo son huerfanas (Login.tsx/
+   SetPassword.tsx no usan i18n, ya estan hardcodeadas en español), asi
+   que no se tocaron.
+2. **`StatusBadge` mostraba el enum crudo** ("approved"/"processed"/
+   "uploaded"...) en vez de traducido -- afecta Dashboard, Approvals,
+   Exports e Invoices (mismo componente compartido).
+3. **`/suppliers` inflado con empresas deshabilitadas**: "10,441
+   proveedores, 10,440 bloqueados" -- parecia que casi todo el padron
+   estaba bloqueado. Causa real: `fetchAllSuppliers()` traia `vendors`
+   sin filtrar por empresa; 6,946 filas eran de `DUCKTAPE MEDIA GROUP` y
+   `JUAN FABIAN`, deshabilitadas el 2026-08-29. Con el fix: 3,495 (el
+   numero real, ya confirmado antes en esta bitacora). Aprendizaje
+   registrado: RLS da acceso irrestricto a admin/superadmin/approver
+   sobre TODAS las companies sin importar `disabled_at` -- cualquier
+   fetch nuevo tiene que filtrar por empresa activa a mano.
+4. **`/audit` mostraba "Estado: pending_approval/paid/export_error"
+   crudo** -- faltaban esos 3 en `STATUS_MESSAGE_KEY`, completado con
+   mensajes en español (uno nuevo reusa `invoiceConfirmedForApprovalAudit`
+   ya existente, 2 mensajes nuevos agregados a `es.json`/`en.json`).
+5. **Deferido y luego tambien corregido** (Jonatan confirmo "si"):
+   `/exports` mostraba filas sin numero de factura visible para facturas
+   recien cargadas -- mismo fallback al id corto que ya usa `Invoices.tsx`.
+
+**Fuera de esta ronda** (ya corregido antes de correr `/qa`, misma
+sesión): los 4 cron de sync corrian cada minuto en vez de 15/30/360 min.
+
+**Commits**: `ddb589e` (i18n + StatusBadge), `457fd5f`
+(fetchAllSuppliers), `d1ebf22` (Audit.tsx), `c4ece86` (Exports.tsx) --
+pusheados a `origin/main`.
