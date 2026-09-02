@@ -36,6 +36,14 @@ import {
 // fuera de esa primera pagina. Encontrado en /qa 2026-08-20 viendo varias
 // filas de /orders sin nombre de proveedor pese a que el JOIN en la base de
 // datos si resuelve el nombre correctamente.
+// Escapa caracteres con significado especial dentro de un filtro `.or()`
+// de PostgREST (coma/parentesis/punto separan condiciones o campos) --
+// sin esto, un termino de busqueda con esos caracteres rompe el filtro
+// o cambia su significado. Ver PostgREST docs, "Reserved characters".
+function escapePostgrestFilterValue(value: string): string {
+  return value.replace(/[,.()\\]/g, (c) => `\\${c}`);
+}
+
 async function fetchAllRows<T>(table: string): Promise<T[]> {
   const pageSize = 1000;
   let allRows: T[] = [];
@@ -340,7 +348,27 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     const to = from + input.pageSize - 1;
     let query = supabase.from("purchase_orders").select("*", { count: "exact" });
 
-    if (input.orderNumber?.trim()) query = query.ilike("order_number", `%${input.orderNumber.trim()}%`);
+    // Hallazgo real (2026-09-02): el campo de busqueda dice "numero de
+    // orden, proveedor o descripcion" pero solo filtraba por
+    // order_number -- un proveedor con ordenes reales (PROV-002998,
+    // SUGOPECA) no aparecia nunca buscandolo por numero/nombre. Se
+    // resuelve el termino contra vendors (numero o nombre) primero y se
+    // combina con order_number/description en un solo OR.
+    const searchTerm = input.orderNumber?.trim();
+    if (searchTerm) {
+      const escaped = escapePostgrestFilterValue(searchTerm);
+      let vendorQuery = supabase
+        .from("vendors")
+        .select("id")
+        .or(`vendor_number.ilike.%${escaped}%,company_name.ilike.%${escaped}%`);
+      if (input.companyId) vendorQuery = vendorQuery.eq("company_id", input.companyId);
+      const { data: matchedVendors } = await vendorQuery;
+      const vendorIds = (matchedVendors ?? []).map((v) => v.id as string);
+
+      const orParts = [`order_number.ilike.%${escaped}%`, `description.ilike.%${escaped}%`];
+      if (vendorIds.length > 0) orParts.push(`vendor_id.in.(${vendorIds.join(",")})`);
+      query = query.or(orParts.join(","));
+    }
     if (input.status && input.status !== "all") query = query.eq("status", input.status);
     if (input.dateFrom) query = query.gte("order_date", input.dateFrom);
     if (input.dateTo) query = query.lte("order_date", input.dateTo);
