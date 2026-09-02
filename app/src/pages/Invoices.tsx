@@ -615,7 +615,11 @@ export function InvoiceDetail() {
         )}
       </Card>
 
-      {isApprover && invoice.status === "processed" && (
+      {/* "exported" es el estado terminal desde 2026-09-02 (ver
+          bc-export-invoice/index.ts: ya no crea Factura de Compra, solo
+          sincroniza la Orden) -- "processed" se sigue aceptando aca por las
+          facturas reales que ya llegaron a ese estado con el flujo viejo. */}
+      {isApprover && (invoice.status === "exported" || invoice.status === "processed") && (
         <Card className="p-5">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-lg font-semibold text-slate-950">Pagos</h2>

@@ -46,7 +46,10 @@ export function Payments() {
   const processed = useMemo(
     () =>
       invoices.filter((inv) => {
-        if (inv.status !== "processed") return false;
+        // "exported" es el estado terminal desde 2026-09-02 -- "processed"
+        // se sigue aceptando por las facturas reales que ya llegaron a ese
+        // estado con el flujo viejo (creaba una Factura de Compra en BC).
+        if (inv.status !== "exported" && inv.status !== "processed") return false;
         if (isAdmin) return scopeCompanyId ? inv.companyId === scopeCompanyId : true;
         if (isSupplier) return !!session.supplierId && inv.supplierId === session.supplierId;
         return inv.companyId === session.companyId;

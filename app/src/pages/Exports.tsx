@@ -8,18 +8,22 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { ExportStatusBadge } from "@/components/ui/ExportStatusBadge";
 
 type ExportResult =
-  | { kind: "success"; invoiceNumber: string; bcInvoiceNumber: string; attached: boolean; orderSynced: boolean }
+  | { kind: "success"; invoiceNumber: string; orderNumber: string; attached: boolean }
   | { kind: "error"; invoiceNumber: string; message: string };
 
 // Reconstruccion de `function wP()` (Monitoreo de exportaciones) del bundle
 // original, index-beautified.js:27330.
 //
-// Fase A: "Exportar ahora" ahora llama de verdad a Business Central via la
-// Edge Function bc-export-invoice (ver domain.ts:exportInvoice). El boton se
+// Fase A: "Exportar ahora" llama de verdad a Business Central via la Edge
+// Function bc-export-invoice (ver domain.ts:exportInvoice). El boton se
 // muestra para facturas "approved" — el flujo actual de aprobacion nunca
 // produce el estado "ready_for_export" (definido en types.ts pero sin
 // ninguna transicion que lo alcance), asi que se acepta tambien "approved"
 // como disparador, igual que ya hace el conteo de Dashboard.tsx.
+//
+// 2026-09-02: dejo de crear una Factura de Compra en BC -- solo completa
+// la seccion General de la Orden de Compra (fecha/Nº factura/NCF) y
+// adjunta el PDF ahi. Ver el comentario grande en bc-export-invoice/index.ts.
 
 function formatUpdated(value: string) {
   if (!value) return "";
@@ -40,8 +44,8 @@ export function Exports() {
     if (!session.userId) return;
     setExportingId(invoiceId);
     try {
-      const { bcInvoiceNumber, attached, orderSynced } = await exportInvoice(invoiceId, session.userId);
-      setResult({ kind: "success", invoiceNumber, bcInvoiceNumber, attached, orderSynced });
+      const { orderNumber, attached } = await exportInvoice(invoiceId, session.userId);
+      setResult({ kind: "success", invoiceNumber, orderNumber, attached });
     } catch (err) {
       setResult({ kind: "error", invoiceNumber, message: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -107,15 +111,11 @@ export function Exports() {
                 </p>
                 <p className="mt-2 text-lg font-semibold text-slate-950">Factura {result.invoiceNumber}</p>
                 <p className="mt-3 text-sm text-slate-600">
-                  Creada en Business Central como <span className="font-semibold text-slate-900">{result.bcInvoiceNumber}</span>.
+                  Orden de Compra <span className="font-semibold text-slate-900">{result.orderNumber}</span> actualizada
+                  en Business Central con la fecha, Nº factura y NCF.
                 </p>
                 <p className="mt-1 text-sm text-slate-600">
-                  {result.attached ? "El PDF se adjunto correctamente." : "No tenia PDF para adjuntar."}
-                </p>
-                <p className="mt-1 text-sm text-slate-600">
-                  {result.orderSynced
-                    ? "La Orden de Compra tambien quedo actualizada con la fecha, Nº factura y NCF."
-                    : "No se pudo reflejar en la Orden de Compra (la factura en BC ya quedo bien creada de todas formas) -- revisar si la extension AL de Business Central esta publicada."}
+                  {result.attached ? "El PDF se adjunto a la orden correctamente." : "No tenia PDF para adjuntar."}
                 </p>
               </>
             ) : (

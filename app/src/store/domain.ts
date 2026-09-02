@@ -72,7 +72,7 @@ interface DomainStore {
   exportInvoice: (
     invoiceId: string,
     changedBy: string,
-  ) => Promise<{ bcInvoiceNumber: string; attached: boolean; orderSynced: boolean }>;
+  ) => Promise<{ orderNumber: string; attached: boolean }>;
   confirmInvoiceForApproval: (invoiceId: string, changedBy: string) => Promise<void>;
   // Confirmacion de orden de compra (Dias 7-9): registro solo-portal, nunca
   // escribe a BC directo — ver rpc_confirm_purchase_order en schema-v4.sql.
@@ -357,10 +357,11 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     await get().fetchAll();
   },
 
-  // Exportacion real a Business Central (Fase A): invoca la Edge Function
-  // bc-export-invoice, que crea la purchaseInvoice en BC sobre la orden de
-  // compra vinculada, copia sus lineas y adjunta el PDF. Reemplaza el stub
-  // que solo marcaba "exported" en Supabase sin llamar a BC.
+  // Exportacion real a Business Central (Fase A). Rediseñado 2026-09-02
+  // (pedido de Jonatan): ya NO crea ninguna Factura de Compra en BC -- solo
+  // completa la seccion General de la Orden de Compra vinculada (fecha,
+  // Nº factura, NCF) y adjunta el PDF ahi. Ver el comentario grande al
+  // principio de bc-export-invoice/index.ts para el porque del cambio.
   async exportInvoice(invoiceId, changedBy) {
     const { data, error } = await supabase.functions.invoke("bc-export-invoice", {
       body: { invoiceId, changedBy },
@@ -389,7 +390,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     }
     if (!data?.ok) throw new Error(data?.error ?? "La exportacion a Business Central fallo");
     await get().fetchAll();
-    return { bcInvoiceNumber: data.bcInvoiceNumber as string, attached: !!data.attached, orderSynced: !!data.orderSynced };
+    return { orderNumber: data.orderNumber as string, attached: !!data.attached };
   },
 
   async updateInvoiceData(invoiceId, patch) {
