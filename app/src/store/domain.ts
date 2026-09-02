@@ -301,9 +301,38 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     }
   },
 
+  // Hallazgo QA 2026-09-02: traia TODOS los vendors sin filtrar, incluidos
+  // los de empresas ya deshabilitadas (disabled_at) el 2026-08-29 -- 6,946
+  // de los 10,441 vendors "Suppliers" mostraba pertenecen a 2 empresas de
+  // prueba desactivadas (DUCKTAPE MEDIA GROUP, JUAN FABIAN), inflando las
+  // tarjetas de estadisticas ("Bloqueados: 10,440") con ruido que no tiene
+  // nada que ver con la operacion real de Adsemble. Se filtra a solo
+  // vendors de empresas activas.
   async fetchAllSuppliers() {
-    const rows = await fetchAllRows<Record<string, unknown>>("vendors");
-    return rows.map(mapSupplier);
+    const { data: activeCompanies, error: companiesErr } = await supabase
+      .from("companies")
+      .select("id")
+      .is("disabled_at", null);
+    if (companiesErr) throw companiesErr;
+    const activeCompanyIds = (activeCompanies ?? []).map((c) => c.id as string);
+    if (activeCompanyIds.length === 0) return [];
+
+    const pageSize = 1000;
+    let allRows: Record<string, unknown>[] = [];
+    let from = 0;
+    for (;;) {
+      const { data, error } = await supabase
+        .from("vendors")
+        .select("*")
+        .in("company_id", activeCompanyIds)
+        .order("id", { ascending: true })
+        .range(from, from + pageSize - 1);
+      if (error) throw error;
+      allRows = allRows.concat(data ?? []);
+      if (!data || data.length < pageSize) break;
+      from += pageSize;
+    }
+    return allRows.map(mapSupplier);
   },
 
   async fetchPurchaseOrdersPage(input) {
