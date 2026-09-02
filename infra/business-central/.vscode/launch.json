@@ -11,6 +11,17 @@
       "authentication": "AAD",
       "breakOnError": "All",
       "launchBrowser": true
+    },
+    {
+      "type": "al",
+      "request": "launch",
+      "name": "Production",
+      "environmentType": "Production",
+      "environmentName": "Production",
+      "tenant": "dd651e07-e13b-4688-823d-7da245bf0163",
+      "authentication": "AAD",
+      "breakOnError": "All",
+      "launchBrowser": true
     }
   ]
 }
