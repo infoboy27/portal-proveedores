@@ -14,12 +14,29 @@ const statusStyles: Record<InvoiceStatus, string> = {
   export_error: "bg-rose-100 text-rose-700",
 };
 
+// Hallazgo QA 2026-09-02: mostraba el valor crudo del enum (status en
+// ingles, "approved"/"processed"/etc.) en TODO el portal -- Dashboard,
+// Approvals, Exports e Invoices usan este mismo componente. Mismo patron
+// ya establecido en ExportStatusBadge.tsx/Orders.tsx (mapa fijo, no
+// claves i18n), mismos textos ya usados en es.json para estos estados.
+const statusLabels: Record<InvoiceStatus, string> = {
+  draft: "Borrador",
+  uploaded: "Cargada",
+  pending_approval: "En aprobacion",
+  rejected: "Rechazada",
+  approved: "Aprobada",
+  ready_for_export: "Lista para exportacion",
+  exported: "Exportada",
+  processed: "Procesada",
+  export_error: "Error de exportacion",
+};
+
 export function StatusBadge({ status }: { status: InvoiceStatus }) {
   return (
     <span
       className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${statusStyles[status]}`}
     >
-      {status}
+      {statusLabels[status]}
     </span>
   );
 }
