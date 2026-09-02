@@ -3121,3 +3121,91 @@ Jonatan.
 diagnóstico del endpoint de desarrollo bloqueado, compilar+subir a mano)
 en `infra/business-central/README.md` para la próxima vez que haga
 falta republicar.
+
+---
+
+## 2026-09-02 (continuación) — Spec grande de Key Players: multiempresa, bloqueo de factura, fecha de pago, exportación en lote
+
+Jonatan pasó un pedido formal de 18 secciones ("Cambios solicitados al
+Portal de Proveedores"). Antes de tocar código se hizo el análisis
+pedido explícitamente — y varias de las premisas del pedido resultaron
+**no ser ciertas contra el código real**:
+
+- **El selector de empresa NO estaba restringido a Super Admin** (como
+  asumía el punto 1) — ya era genérico por rol vía RLS
+  (`portal_company_ids()`, Fase 5 del 29/08). Lo que pasaba es que casi
+  todos los usuarios reales hoy tienen 1 sola empresa (Adsemble es la
+  única activa en producción), así que el selector se ocultaba
+  (`availableCompanies.length > 1`) para ellos y solo se veía para
+  admin/superadmin (que siempre tienen la opción sintética "Todas las
+  empresas" agregada).
+- La **fecha posible de pago** (punto 7) ya existía parcialmente
+  (`payment_due_date`, sincronizada desde `vendorLedgerEntries.dueDate`
+  real de BC una vez posteada) — lo que faltaba era el ESTIMADO previo a
+  eso, calculado desde la condición de pago de la orden.
+
+Se implementaron los 4 items genuinamente faltantes, cada uno verificado
+en vivo (no solo aplicado):
+
+**Selector obligatorio (items 1/12/13)**: con 2+ empresas reales
+(excluyendo la opción sintética de admin/superadmin, que arrancan en
+alcance global por diseño), un modal bloquea toda la app hasta elegir
+explícitamente — `App.tsx` calcula `companyConfirmed`, `AppShell.tsx`
+renderiza el gate (`CompanyGate`). Con 1 sola empresa se autoselecciona
+sin fricción. **Verificado en vivo con un usuario real** de 2 empresas
+(`jonathanmaria+qa2026@gmail.com`, rol supplier): el gate se mostró con
+las 2 opciones reales, elegir una desbloqueó la app mostrando solo los
+datos de esa empresa.
+
+**Bloqueo de carga de factura (item 6)**: no se puede subir factura
+contra una orden no confirmada o con cambio solicitado pendiente.
+Frontend (`Orders.tsx`, mensaje claro por caso) + backend real
+(`check_po_confirmed_for_invoice`, `schema-v27.sql`) — admin/superadmin
+exentos (corrección de errores real de operación, mismo criterio que el
+resto del proyecto). **Verificado en vivo los 3 casos** (pendiente →
+bloqueado, cambio solicitado → bloqueado con mensaje distinto, admin →
+permitido) con transacciones revertidas sobre órdenes reales.
+
+**Fecha estimada de pago (item 7)**: `fechaFactura + Payment Terms real
+de BC` — nunca una interpretación local inventada. BC expone
+`paymentTerms.dueDateCalculation` como DateFormula (confirmado en vivo:
+`10D`/`15D`/.../`CONTADO`=`0D` en este tenant) — se agregó un intérprete
+mínimo (`estimate_payment_date`, `schema-v28.sql`) que reconoce
+`ND`/`NW`/`NM`/`NY`/`CM`, y devuelve `NULL` (nunca adivina) ante
+cualquier formula que no reconoce. `bc-sync-orders` ahora trae
+`paymentTermsId` por orden y sincroniza el catálogo `payment_terms` de
+BC. Prioridad real: BC posteado > manual > estimado > nada (se corrigió
+`setInvoicePaymentDueDate` para marcar `payment_source='manual'`, que
+antes no lo hacía y podía dejar una fecha manual sin protección contra
+ser pisada). **Verificado en vivo**: factura con fecha `2026-09-02`
+sobre una orden con condición `5D` → `payment_due_date = 2026-09-07`,
+`payment_source = 'estimated'` — exacto al ejemplo del pedido.
+
+**Exportación en lote (item 9)**: checkbox por fila + "Seleccionar
+todos" en Monitoreo de exportaciones. Cada factura se exporta con su
+propia llamada independiente a `exportInvoice` (mismo camino de
+siempre, nunca una numeración compartida), resultado individual por
+factura en un resumen (✓/✕), reintento solo de las fallidas sin volver a
+tocar las exitosas. Verificado visualmente en vivo (selección
+propagada, contador de "Exportar seleccionadas (N)" correcto).
+
+**Build**: `tsc --noEmit` y `vite build` limpios. `npm run lint` no
+corre — no hay `eslint.config.js` en el repo (falta preexistente, no
+introducida acá). Sin framework de tests en el repo (confirmado hoy
+mismo durante la ronda de `/qa`, decisión explícita de no bootstrapearlo
+todavía) — las reglas nuevas se verificaron con transacciones reales
+revertidas contra Postgres, mismo método que el resto del proyecto.
+
+**Pendiente, requiere decisión de negocio de Jonatan** (no se tocó sin
+confirmar, ver resumen entregado en el chat):
+- Item 4: hoy `admin` tiene el mismo alcance global que `superadmin`
+  (idéntico en RLS desde el 20/08) — "administrador limitado a sus
+  empresas asignadas, con gestión de analistas" es un modelo de datos y
+  de RLS nuevo, no una extensión de lo que existe.
+- Item 8: "Estado de Pago" sin edición manual, BC como única fuente —
+  entra en conflicto directo con "Marcar como pagada" manual, una
+  funcionalidad que Jonatan pidió explícitamente construir en una
+  sesión anterior (`rpc_mark_invoice_paid`, `payment_source='manual'`).
+- Split de "Analista" (item 3) vs. "Aprobador" (item 5) en roles
+  separados — hoy son el mismo rol interno (`approver`, mostrado como
+  "Analista" en la UI, que también aprueba/rechaza).
