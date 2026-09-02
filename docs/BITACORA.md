@@ -2755,3 +2755,74 @@ activa) para futuras pruebas ad-hoc con la cuenta de Adobe.
 **Desplegado**: `bc-export-invoice` (fix de autorización) y
 `rpc_update_invoice_status` (`schema-v22.sql`, fix de rol +
 suplantación) -- ambos aplicados y verificados en vivo contra producción.
+
+## 2026-09-02 — "El portal solo debe alimentar la Orden, NO debe crear factura en Compras"
+
+Pedido explícito de Jonatan: revertir la decisión del 2026-09-01
+("además del flujo actual") -- `bc-export-invoice` deja de crear la
+Factura de Compra separada en BC **por completo**. Ya se le había
+explicado la implicación real (sin esa factura no hay asiento contable,
+ni dato para 606/607/608, ni registro de pago hasta que alguien en
+Adsemble arme y postee la factura a mano en BC) antes de tomar la
+decisión, así que no se volvió a preguntar -- se implementó directo.
+
+**Reescrito `bc-export-invoice`**: ya no crea `purchaseInvoices`, no
+copia líneas, no usa `PurchInvoiceOrderLinkAPI.al`/`PurchInvoiceFiscalAPI.al`
+(esos archivos AL quedan sin caller, no se borraron del repo/BC por si
+hace falta reactivarlos -- la lógica vieja sigue en el historial de git).
+Ahora solo: `orderDate` (estándar) + `vendorInvoiceNumber`/`fiscalDocumentNo`
+(`purchaseOrderFiscals`, custom) + adjuntar el PDF, **todo sobre la Orden
+de Compra**, nada sobre un documento nuevo. La factura del portal pasa a
+`status='exported'` en vez de `'processed'` (`exported` ya estaba en el
+enum y la UI ya lo trataba igual que `processed` en todos lados --
+badges, stats, Dashboard -- no hizo falta tocar pantallas para eso).
+
+**Regresión encontrada y arreglada de encimada**: `Invoices.tsx` (card de
+Pagos), `Payments.tsx` (listado) y `PaymentStatusBadge.tsx` exigían
+`status === "processed"` a mano -- con el cambio, ninguna factura nueva
+iba a volver a mostrar el tracking de pago nunca más. Se acepta
+`"exported" || "processed"` en los 3 lugares (las 8 facturas reales que
+ya llegaron a `processed` con el flujo viejo se siguen viendo bien).
+Mismo problema en `rpc_mark_invoice_paid` (exigía `status = 'processed'`
+en el `WHERE` de la base) -- arreglado en `schema-v23.sql`.
+
+**Hallazgo de seguridad grave, encontrado revisando el resto de RPCs
+`SECURITY DEFINER` por el mismo patrón del fix de ayer**
+(`rpc_update_invoice_status`): la MAYORÍA de las funciones de escritura
+validaban el rol de un `p_user_id`/`p_changed_by` que manda el propio
+cliente en el body, nunca `auth.uid()`. Cualquiera logueado -- hasta un
+proveedor -- podía pasar el id de un admin conocido (no hace falta su
+password) como ese parámetro para que la función creyera que quien
+llama tiene ese rol. **El caso más grave: `rpc_update_user_profile`
+permitía escalación de privilegios completa** -- pasar el id de un admin
+conocido como `p_changed_by` y `p_target_user_id` = uno mismo alcanzaba
+para auto-promoverse a superadmin. Arreglado en `rpc_confirm_purchase_order`,
+`rpc_update_user_profile` y `rpc_confirm_invoice_for_approval` (mismo
+criterio: exigir que el parámetro de "quien lo pide" sea siempre
+`auth.uid()`), todo en `schema-v23.sql`.
+
+**Bonus del mismo repaso**: `update_invoice_data` (RPC vieja, `SECURITY
+DEFINER`, upsert libre sobre `invoices` sin NINGUNA validación de rol)
+resultó estar **huérfana** -- grep completo del repo sin un solo caller,
+ni frontend ni Edge Function. Como nadie la usa, se eliminó en vez de
+arreglarla (`drop function`, `schema-v23.sql`) -- menos superficie de
+ataque que mantener viva una función sin dueño.
+
+**Verificado en vivo, 8/8 casos**: los 3 intentos de suplantación
+bloqueados (incluida la escalación a superadmin), `update_invoice_data`
+confirmada inexistente, y el flujo completo nuevo probado de punta a
+punta sobre una orden limpia (CP-000219, UNPREDATOR LLC) -- exportar
+devuelve `{ok:true, orderNumber, attached}` sin ningún campo de factura
+BC, la factura del portal queda `exported` con `bc_invoice_id` null, los
+campos de la orden en BC se actualizan de verdad (confirmado por
+lectura directa), y **no se creó ninguna `purchaseInvoice` para ese
+proveedor** (verificado filtrando por `vendorNumber` en BC, lista
+vacía). Datos de prueba revertidos por completo despues (orden vuelta a
+su fecha original, campos fiscales vueltos a vacío, factura de prueba
+borrada) -- CP-000219 sigue "limpia" para uso real.
+
+**Desplegado**: `bc-export-invoice` reescrito, `domain.ts`/`Exports.tsx`
+(nuevo shape de respuesta: `orderNumber` en vez de `bcInvoiceNumber`,
+sin `orderSynced`), `Invoices.tsx`/`Payments.tsx`/`PaymentStatusBadge.tsx`
+(aceptan `exported`), `schema-v23.sql` (4 fixes de seguridad + el fix de
+`processed`→`exported`) -- todo aplicado y verificado en vivo.
