@@ -53,10 +53,24 @@ async function fetchExpenseClassCode(bcCompanyId: string, orderBcId: string): Pr
 const STATUS_MAP: Record<string, string> = {
   Open: "open",
   Draft: "draft",
-  "In Review": "in_review",
   Closed: "closed",
   Released: "open",
 };
+
+// Valor crudo que devuelve la API de BC para "Pendiente de aprobación"
+// (Purchase Header Status = "Pending Approval", nombre del enum "In Review").
+// OData escapa el espacio del nombre del enum como "_x0020_" -- NO es un
+// espacio literal. Hallazgo de Jonatan, 2026-09-02: la clave vieja del
+// STATUS_MAP ("In Review", con espacio literal) nunca hacia match contra
+// esto, asi que `STATUS_MAP[order.status] ?? "open"` caia siempre al
+// fallback "open" -- una orden pendiente de aprobar en BC quedaba
+// indistinguible de una ya aprobada, sincronizada y **totalmente
+// trabajable** desde el portal (confirmar, subir factura). Verificado en
+// vivo contra el sandbox: 2 ordenes reales (CP-000222, CP-000223) con
+// status="In_x0020_Review" en BC, guardadas como status="open" en el
+// portal -- una de ellas (CP-000223) ya tenia una confirmacion y una
+// factura subida en el momento del hallazgo.
+const STATUS_PENDING_APPROVAL = "In_x0020_Review";
 
 function admin() {
   return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
@@ -104,25 +118,27 @@ Deno.serve(async () => {
     let created = 0;
     let updated = 0;
     let lineCount = 0;
-    let skippedDrafts = 0;
+    let skippedNotApproved = 0;
     const perCompany: unknown[] = [];
 
     for (const company of companies) {
       const orders = await bcGetAll<BcPurchaseOrder>(company.bcCompanyId, "/purchaseOrders");
       let companyCreated = 0;
       let companyUpdated = 0;
-      let companySkippedDrafts = 0;
+      let companySkippedNotApproved = 0;
 
-      // Las ordenes en "Draft" en BC todavia no fueron liberadas/aprobadas
-      // internamente por Adsemble -- no deben llegar al portal, ni para el
-      // proveedor ni para el admin, hasta que BC las libere. Antes se
-      // sincronizaban igual (con badge "Borrador" en la UI, pero sin
-      // bloquear "Confirmar orden") — un proveedor podia confirmar una orden
-      // que el propio equipo de Adsemble aun no habia terminado de armar.
-      // Decision de Jonatan, 2026-08-21.
+      // Las ordenes en "Draft" o pendientes de aprobacion en BC todavia no
+      // fueron liberadas/aprobadas internamente por Adsemble -- no deben
+      // llegar al portal, ni para el proveedor ni para el admin, hasta que
+      // BC las apruebe. Antes se sincronizaban igual (con badge en la UI,
+      // pero sin bloquear "Confirmar orden") — un proveedor podia confirmar
+      // una orden que el propio equipo de Adsemble aun no habia terminado
+      // de aprobar. Decision de Jonatan, 2026-08-21 (solo cubria Draft) y
+      // 2026-09-02 (extendida a pendiente de aprobacion, con evidencia real
+      // de que se estaba colando -- ver comentario en STATUS_PENDING_APPROVAL).
       for (const order of orders) {
-        if (order.status === "Draft") {
-          companySkippedDrafts++;
+        if (order.status === "Draft" || order.status === STATUS_PENDING_APPROVAL) {
+          companySkippedNotApproved++;
           continue;
         }
         const vendorId = await resolveVendorId(db, order, company.id);
@@ -182,13 +198,13 @@ Deno.serve(async () => {
       ordersProcessed += orders.length;
       created += companyCreated;
       updated += companyUpdated;
-      skippedDrafts += companySkippedDrafts;
+      skippedNotApproved += companySkippedNotApproved;
       perCompany.push({
         company: company.name,
         ordersProcessed: orders.length,
         created: companyCreated,
         updated: companyUpdated,
-        skippedDrafts: companySkippedDrafts,
+        skippedNotApproved: companySkippedNotApproved,
       });
     }
 
@@ -202,7 +218,7 @@ Deno.serve(async () => {
         created,
         updated,
         linesSynced: lineCount,
-        skippedDrafts,
+        skippedNotApproved,
         perCompany,
       }),
       { headers: { "Content-Type": "application/json" } },

@@ -2887,3 +2887,53 @@ orden ya esta confirmada, no se puede modificar la confirmacion`.
 **Desplegado**: `schema-v25.sql` aplicado + `NOTIFY pgrst, 'reload
 schema'`; `Orders.tsx` reconstruido y desplegado, bundle nuevo confirmado
 en `proveedores.jfmcss.com` (`index-DjwM9Q83.js`).
+
+---
+
+## 2026-09-02 (continuación) — Órdenes pendientes de aprobación en BC se colaban al portal, ya trabajables
+
+**Reporte de Jonatan**: "las ordenes de compra pendientes de aprobacion en
+BC me aparecen en el Portal y hasta me permite trabajarlas cosa que no
+deberia ser, las ordenes de compra que deben aparecer y permitirme
+trabajar desde el portal deben ser las aprobadas".
+
+**Causa raíz confirmada en vivo**: `bc-sync-orders` ya excluía las órdenes
+en `Draft` desde el 21/08, pero el mapeo de "Pendiente de aprobación"
+tenía un bug de encoding -- BC devuelve ese estado como el string crudo
+`In_x0020_Review` (OData escapa el espacio del nombre del enum así), pero
+`STATUS_MAP` tenía la clave `"In Review"` con espacio literal. Nunca
+hacía match, así que `STATUS_MAP[order.status] ?? "open"` caía siempre al
+fallback `"open"` -- una orden pendiente de aprobar en BC quedaba
+sincronizada y **totalmente trabajable** (confirmar, subir factura) desde
+el portal, indistinguible de una ya aprobada.
+
+**Evidencia real, no solo del código**: 2 órdenes de prueba de Jonatan
+(`CP-000222`, `CP-000223`, vendor `PROV-000278`) con
+`status="In_x0020_Review"` en BC estaban guardadas como `status="open"`
+en el portal. `CP-000223` ya se había usado de punta a punta: confirmada,
+factura `FAC-2026-0902-001` subida y **exportada** -- como la exportación
+ya no crea factura en BC (solo actualiza la orden), esto ya había escrito
+`vendorInvoiceNumber`/`fiscalDocumentNo`/PDF adjunto en la orden real de
+BC, todavía pendiente de aprobar internamente.
+
+**Arreglado**: `bc-sync-orders/index.ts` -- se corrigió la constante al
+valor crudo real (`STATUS_PENDING_APPROVAL = "In_x0020_Review"`) y se
+extendió la misma exclusión que ya aplicaba a `Draft` (decisión de
+Jonatan del 21/08) para que también cubra pendiente de aprobación --
+ninguna de las dos llega al portal hasta que BC la apruebe. Campo de
+respuesta renombrado `skippedDrafts` → `skippedNotApproved` (ahora cubre
+ambos casos). Verificado en vivo: `"skippedNotApproved":2` en la corrida
+real tras desplegar.
+
+**Limpieza de los 2 casos ya contaminados** (confirmada con Jonatan vía
+pregunta explícita -- "Borrar todo"):
+- `CP-000222` (sin factura ni confirmación): fila borrada del portal.
+- `CP-000223`: borrados del portal la factura, su historial de estados,
+  las 2 confirmaciones y la orden; borrado el PDF huérfano de Storage; **y
+  revertido en BC** -- `vendorInvoiceNumber`/`fiscalDocumentNo` vueltos a
+  vacío vía `PATCH` a `purchaseOrderFiscals`, adjunto eliminado (`DELETE
+  .../attachments(...)`, confirmado `204`). Verificado que ambas órdenes
+  ya no existen en `purchase_orders` del portal.
+
+**Desplegado**: `bc-sync-orders` (solo backend, sin cambios de frontend)
+copiado al servidor y `docker compose restart functions`.
