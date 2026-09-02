@@ -3209,3 +3209,32 @@ confirmar, ver resumen entregado en el chat):
 - Split de "Analista" (item 3) vs. "Aprobador" (item 5) en roles
   separados — hoy son el mismo rol interno (`approver`, mostrado como
   "Analista" en la UI, que también aprueba/rechaza).
+
+---
+
+## 2026-09-02 (continuación) — Ajuste de cadencia del sync de órdenes + bug real de búsqueda
+
+**Cadencia del sync de órdenes a 1 minuto**, pedido explícito de
+Jonatan: cron de `sync-purchase-orders.sh` de `*/15 * * * *` a
+`* * * * *`. El throttle interno (`sync_orders_interval_minutes` en
+`system_settings`) ya estaba en `1` — pero al coincidir exacto con el
+tick del cron generaba un patrón "corre, salta, corre, salta" (~2 min
+reales) por el desfase de segundos entre ambos. Se bajó el throttle
+interno a `0` para que el cron sea el único que manda. **Verificado en
+vivo con 3 ticks consecutivos**, exactamente 60s entre cada uno, sin
+saltos.
+
+**Bug real encontrado**: Jonatan preguntó "por que no visualizo
+Prov-002998 en el portal?" — el proveedor SÍ existe (empresa Adsemble,
+2 órdenes reales y abiertas: CP-000210, CP-000229), confirmado en
+`/proveedores` y en la base directamente. Pero buscarlo en
+`/orders` por número/nombre devolvía **"No se encontraron ordenes"**.
+
+Causa real: el campo de búsqueda promete "número de orden, proveedor o
+descripción" pero `fetchPurchaseOrdersPage` (`domain.ts`) solo filtraba
+por `order_number` — nunca tocaba `vendors` ni `description`. Se
+corrigió: el término se resuelve contra `vendors` (número o nombre,
+escapado contra los caracteres reservados de `.or()` de PostgREST —
+`,.()\`) y se combina con `order_number`/`description` en un solo OR.
+**Verificado en vivo antes/después**: buscar "PROV-002998" pasó de 0 a
+2 resultados reales.
