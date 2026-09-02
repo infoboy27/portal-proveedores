@@ -16,6 +16,7 @@ const emptySession: SessionState = {
   activeCompany: null,
   availableCompanies: [],
   vendorMappings: [],
+  companyConfirmed: true,
 };
 
 // Equivalente a `zt` en el bundle original (store de sesion via Zustand).
@@ -42,6 +43,9 @@ export const useSessionStore = create<SessionStore>((set) => ({
           activeCompany: company,
           companyId: company.isGlobal ? state.session.companyId : company.companyId,
           supplierId: mapping?.vendorId ?? null,
+          // Elegir explicitamente (aunque sea re-elegir la misma) siempre
+          // confirma -- es la unica forma de que el gate desaparezca.
+          companyConfirmed: true,
         },
       };
     }),

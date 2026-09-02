@@ -165,7 +165,13 @@ export function Payments() {
                         <PaymentStatusBadge invoice={inv} />
                       </td>
                       <td className="px-5 py-4 text-xs text-slate-500">
-                        {inv.paymentSource === "bc" ? "Business Central" : inv.paymentSource === "manual" ? "Manual" : "-"}
+                        {inv.paymentSource === "bc"
+                          ? "Business Central"
+                          : inv.paymentSource === "manual"
+                            ? "Manual"
+                            : inv.paymentSource === "estimated"
+                              ? "Estimado"
+                              : "-"}
                       </td>
                     </tr>
                   );

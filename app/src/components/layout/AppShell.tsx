@@ -22,18 +22,66 @@ const NAV_ITEMS: { to: string; labelKey: string; feature?: string }[] = [
   { to: "/security", labelKey: "securityTitle", feature: "security.manage" },
 ];
 
+// Key Players (2026-09-02), item 1/12/13: con 2+ empresas reales, el
+// usuario tiene que elegir explicitamente antes de ver cualquier dato --
+// App.tsx ya calculo companyConfirmed=false para este caso. Bloquea toda
+// la app (nada de datos de ninguna empresa se muestra "por defecto")
+// hasta que se confirme una eleccion real.
+function CompanyGate({
+  companies,
+  onConfirm,
+}: {
+  companies: import("@/store/types").Company[];
+  onConfirm: (company: import("@/store/types").Company) => void;
+}) {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+      <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <img src={logoAdsemble} alt="Adsemble" className="mb-4 h-10 w-auto" />
+        <h1 className="text-lg font-semibold text-slate-950">Seleccione una empresa para continuar</h1>
+        <p className="mt-1 text-sm text-slate-600">
+          Tenes acceso a mas de una empresa. Elegi con cual vas a trabajar ahora.
+        </p>
+        <div className="mt-5 space-y-2">
+          {companies.map((c) => (
+            <button
+              key={c.companyId}
+              type="button"
+              onClick={() => onConfirm(c)}
+              className="flex w-full items-center gap-3 rounded-xl border border-slate-200 px-4 py-3 text-left text-sm font-medium text-slate-800 hover:border-slate-400 hover:bg-slate-50"
+            >
+              <span className="h-4 w-4 shrink-0 rounded-full border border-slate-300" />
+              {c.companyName}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Equivalente a `rx` (shell) en el bundle original.
 export function AppShell() {
   const { t } = useTranslation();
   const role = useSessionStore((s) => s.session.role);
   const activeCompany = useSessionStore((s) => s.session.activeCompany);
   const availableCompanies = useSessionStore((s) => s.session.availableCompanies);
+  const companyConfirmed = useSessionStore((s) => s.session.companyConfirmed);
   const setActiveCompany = useSessionStore((s) => s.setActiveCompany);
 
   const visibleNavItems = useMemo(
     () => NAV_ITEMS.filter((item) => !item.feature || (role && ROLE_FEATURES[role]?.includes(item.feature))),
     [role],
   );
+
+  if (!companyConfirmed) {
+    return (
+      <>
+        <IdleSessionGuard />
+        <CompanyGate companies={availableCompanies} onConfirm={setActiveCompany} />
+      </>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50">

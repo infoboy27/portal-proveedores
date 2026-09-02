@@ -661,7 +661,15 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
   },
 
   async setInvoicePaymentDueDate(invoiceId, paymentDueDate) {
-    const { error } = await supabase.from("invoices").update({ payment_due_date: paymentDueDate }).eq("id", invoiceId);
+    // Key Players (2026-09-02), item 7: se marca payment_source='manual'
+    // -- sin esto, el trigger set_estimated_payment_date (schema-v28.sql)
+    // podia pisar esta fecha con el estimado calculado si invoice_date
+    // volviera a cambiar. 'manual' tiene prioridad sobre el estimado,
+    // igual que ya tenia prioridad sobre el real de BC.
+    const { error } = await supabase
+      .from("invoices")
+      .update({ payment_due_date: paymentDueDate, payment_source: paymentDueDate ? "manual" : null })
+      .eq("id", invoiceId);
     if (error) throw error;
     await get().fetchAll();
   },

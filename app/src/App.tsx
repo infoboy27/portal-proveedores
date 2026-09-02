@@ -79,6 +79,14 @@ function AuthBootstrap({ children }: { children: React.ReactNode }) {
         availableCompanies[0] ??
         null;
 
+      // Key Players (2026-09-02), item 1/12/13: admin/superadmin arrancan
+      // en alcance global por diseño (no se les pide elegir). Para el
+      // resto de los roles, con 2+ empresas reales hay que confirmar
+      // explicitamente antes de poder trabajar -- con 1 sola, se
+      // autoselecciona sin friccion (nada que elegir de verdad).
+      const realCompanyCount = availableCompanies.filter((c) => !c.isGlobal).length;
+      const companyConfirmed = role === "admin" || role === "superadmin" || realCompanyCount <= 1;
+
       setSession({
         userId,
         role,
@@ -93,6 +101,7 @@ function AuthBootstrap({ children }: { children: React.ReactNode }) {
         activeCompany,
         availableCompanies,
         vendorMappings,
+        companyConfirmed,
       });
       await fetchAll();
     }

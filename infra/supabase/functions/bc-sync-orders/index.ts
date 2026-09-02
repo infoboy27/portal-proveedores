@@ -16,6 +16,18 @@ interface BcPurchaseOrder {
   vendorName: string;
   totalAmountIncludingTax: number;
   status: string;
+  paymentTermsId: string | null;
+}
+
+// Key Players (2026-09-02), item 7: fecha estimada de pago = fecha de la
+// factura + la condicion de pago de ESTA orden en BC -- nunca inventada
+// localmente. `dueDateCalculation` es la formula real de BC (DateFormula),
+// interpretada server-side en estimate_payment_date (schema-v28.sql).
+interface BcPaymentTerm {
+  id: string;
+  code: string;
+  displayName: string;
+  dueDateCalculation: string;
 }
 
 interface BcPurchaseOrderLine {
@@ -102,6 +114,24 @@ async function resolveVendorId(db: ReturnType<typeof admin>, order: BcPurchaseOr
   return created.id as string;
 }
 
+// Payment Terms cambian poco -- se resincroniza el catalogo completo de
+// la empresa una vez por corrida (no por orden). Upsert por id (bc guid).
+async function syncPaymentTerms(db: ReturnType<typeof admin>, company: { id: string; bcCompanyId: string }): Promise<number> {
+  const terms = await bcGetAll<BcPaymentTerm>(company.bcCompanyId, "/paymentTerms");
+  if (terms.length === 0) return 0;
+  const rows = terms.map((t) => ({
+    id: t.id,
+    company_id: company.id,
+    code: t.code,
+    display_name: t.displayName,
+    due_date_calculation: t.dueDateCalculation,
+    updated_at: new Date().toISOString(),
+  }));
+  const { error } = await db.from("payment_terms").upsert(rows, { onConflict: "id" });
+  if (error) throw error;
+  return rows.length;
+}
+
 Deno.serve(async () => {
   try {
     const db = admin();
@@ -122,6 +152,7 @@ Deno.serve(async () => {
     const perCompany: unknown[] = [];
 
     for (const company of companies) {
+      await syncPaymentTerms(db, company);
       const orders = await bcGetAll<BcPurchaseOrder>(company.bcCompanyId, "/purchaseOrders");
       let companyCreated = 0;
       let companyUpdated = 0;
@@ -156,6 +187,7 @@ Deno.serve(async () => {
           status: STATUS_MAP[order.status] ?? "open",
           bc_id: order.id,
           bc_expense_class_code: expenseClassCode,
+          payment_terms_id: order.paymentTermsId || null,
         };
 
         let orderId: string;

@@ -626,12 +626,19 @@ export function InvoiceDetail() {
             <PaymentStatusBadge invoice={invoice} />
           </div>
           <p className="mt-1 text-sm text-slate-500">
-            Registro manual — Business Central no expone los movimientos de cuentas por pagar de este tenant, asi
-            que el estado de pago no se sincroniza automaticamente.
+            El estado de pago se sincroniza desde Business Central (vendorLedgerEntries) cuando hay match; hasta
+            entonces, o si no hay match, se puede registrar manualmente.
           </p>
 
           <div className="mt-4">
             <label className="text-xs uppercase tracking-[0.18em] text-slate-500">Fecha posible de pago</label>
+            <p className="mt-1 text-xs text-slate-500">
+              {invoice.paymentSource === "estimated"
+                ? "Estimada a partir de la fecha de esta factura + la condicion de pago de la orden en Business Central."
+                : invoice.paymentSource === "bc"
+                  ? "Fecha real de vencimiento sincronizada desde Business Central."
+                  : "Podes ajustarla a mano si hace falta."}
+            </p>
             <div className="mt-1 flex flex-wrap items-center gap-3">
               <Input
                 type="date"

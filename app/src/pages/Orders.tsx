@@ -348,6 +348,21 @@ export function OrderDetail() {
   // no se tocan) tambien caen aca: en cuanto tienen 1+ activa, dejan de
   // admitir otra igual que cualquier orden nueva.
   const hasActiveInvoice = useMemo(() => linkedInvoices.some((inv) => inv.status !== "rejected"), [linkedInvoices]);
+
+  // Pedido de Jonatan (2026-09-02, "Cambios solicitados por Key Players",
+  // item 6): no se puede cargar factura contra una orden que el proveedor
+  // todavia no confirmo, ni mientras tenga un cambio solicitado sin
+  // resolver. admin/superadmin quedan exentos (correccion de errores real
+  // de operacion, mismo criterio que el resto de este archivo). La
+  // garantia real es el trigger check_po_confirmed_for_invoice
+  // (schema-v27.sql) -- esto es solo para el mensaje claro antes de subir.
+  const isAdminRole = session.role === "admin" || session.role === "superadmin";
+  const uploadBlockedReason =
+    isAdminRole || !order || order.confirmationStatus === "confirmed"
+      ? null
+      : order.confirmationStatus === "change_requested"
+        ? "No puede cargar una factura mientras exista una solicitud de cambio pendiente para esta orden."
+        : "No puede cargar una factura porque esta orden de compra todavia no ha sido confirmada.";
   // Desde 2026-09-01 una orden nueva solo admite una factura activa (ver
   // hasActiveInvoice arriba) -- este acumulado sigue sumando todo lo no
   // rechazado por las 6 ordenes viejas que ya traen mas de una (excepcion
@@ -588,13 +603,15 @@ export function OrderDetail() {
             <div>
               <h2 className="text-lg font-semibold text-slate-950">{t("uploadInvoice")}</h2>
               <p className="mt-1 text-sm text-slate-600">
-                {hasActiveInvoice
-                  ? "Esta orden de compra ya tiene una factura asociada. Eliminala primero si fue un error para poder cargar otra."
-                  : t("uploadInvoiceDescription")}
+                {uploadBlockedReason
+                  ? uploadBlockedReason
+                  : hasActiveInvoice
+                    ? "Esta orden de compra ya tiene una factura asociada. Eliminala primero si fue un error para poder cargar otra."
+                    : t("uploadInvoiceDescription")}
               </p>
               {uploadError && <p className="mt-2 text-sm text-rose-700">{uploadError}</p>}
             </div>
-            <Button onClick={() => fileInputRef.current?.click()} disabled={uploading || hasActiveInvoice}>
+            <Button onClick={() => fileInputRef.current?.click()} disabled={uploading || hasActiveInvoice || !!uploadBlockedReason}>
               {uploading ? "..." : t("uploadInvoice")}
             </Button>
             <input

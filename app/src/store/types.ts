@@ -46,6 +46,12 @@ export interface SessionState {
   activeCompany: Company | null;
   availableCompanies: Company[];
   vendorMappings: VendorMapping[];
+  // Key Players (2026-09-02), item 1/12/13: con 2+ empresas reales
+  // (sin contar la opcion sintetica "Todas las empresas" de
+  // admin/superadmin, que arrancan en alcance global por diseño), el
+  // usuario tiene que elegir una explicitamente antes de poder trabajar
+  // -- false hasta que confirme, true de entrada si solo tiene 1 empresa.
+  companyConfirmed: boolean;
 }
 
 export interface Invoice {
@@ -86,7 +92,7 @@ export interface Invoice {
   paymentReference: string | null;
   // 'bc' = escrito por bc-sync-payments (vendorLedgerEntries reales);
   // 'manual' o null = entrada manual (setInvoicePaymentDueDate/markInvoicePaid).
-  paymentSource: "manual" | "bc" | null;
+  paymentSource: "manual" | "bc" | "estimated" | null;
   bcLedgerEntryNo: string | null;
   updatedAt: string;
   createdAt: string;
