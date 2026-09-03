@@ -3238,3 +3238,67 @@ escapado contra los caracteres reservados de `.or()` de PostgREST —
 `,.()\`) y se combina con `order_number`/`description` en un solo OR.
 **Verificado en vivo antes/después**: buscar "PROV-002998" pasó de 0 a
 2 resultados reales.
+
+---
+
+## 2026-09-03 — Item 4 (Key Players): Administrador limitado a sus empresas asignadas
+
+Jonatan pidió seguir con el item 4 pendiente del spec grande de Key
+Players: separar `admin` de `superadmin` (hasta hoy, exactamente el
+mismo rol en RLS — confirmado enumerando `pg_policies`: 17 policies +
+5 RPCs con `portal_role() = ANY(ARRAY['admin','superadmin'])` sin
+ninguna distinción de empresa).
+
+**Hallazgo grave encontrado auditando esto antes de escribir el fix**:
+`rpc_update_user_profile` e `invite-user` permitían que un admin real
+(no superadmin) se auto-promoviera a superadmin, o invitara a otro
+usuario como admin/superadmin en cualquier empresa. **Confirmado en
+vivo con la única cuenta admin real que existe hoy**
+(`c.cuevas@adsemble.do`): se auto-asignó `role='superadmin'` a sí
+misma con éxito dentro de una transacción con `rollback` (nada quedó
+guardado). Confirmado también del lado de `invite-user` con una
+llamada HTTP real usando un token de sesión legítimo de esa cuenta
+(magic link → localStorage → `curl`), pidiendo invitar a alguien como
+superadmin — antes del fix también hubiera tenido éxito.
+
+**Implementado**:
+- `admin_company_assignments` (many-to-many) + `portal_admin_company_ids()`.
+  Backfill automático: el único admin real quedó asignado a la única
+  empresa activa hoy (Adsemble) — preserva el acceso que ya tenía, sin
+  que nadie pierda nada sin una decisión explícita.
+- `rpc_update_user_profile`: un admin solo puede gestionar analistas
+  (`role='approver'`) dentro de sus empresas asignadas — nunca
+  crear/promover un admin o superadmin, ni a sí mismo.
+- `invite-user`: mismo criterio del lado de invitar usuarios nuevos.
+- `rpc_update_invoice_status`, `rpc_mark_invoice_paid`,
+  `rpc_confirm_purchase_order`, `rpc_confirm_invoice_for_approval`:
+  scoping por empresa agregado para admin — de paso se encontró que
+  `rpc_mark_invoice_paid` no tenía **ningún** scoping por empresa
+  antes, ni siquiera para `approver`.
+- 17 RLS policies actualizadas con el mismo criterio (superadmin sin
+  restricción, admin acotado a `portal_admin_company_ids()`, resto sin
+  cambios).
+- Frontend: el selector de empresa del admin ya no muestra "Todas las
+  empresas" sintético — elige entre sus empresas reales, con el mismo
+  gate obligatorio ya construido para proveedor/analista/aprobador
+  (item 1/12/13) si tiene 2+. `Users.tsx`: el dropdown de rol para un
+  admin solo ofrece "Analista" (evita ofrecer una opción que el
+  backend va a rechazar igual), la empresa se acota sola gracias a la
+  RLS ya corregida de `companies`, y pantalla nueva "Empresas
+  asignadas" (solo visible para superadmin) para asignar/quitar
+  empresas a un admin.
+
+**Verificado en vivo, no solo aplicado**:
+- Auto-promoción a superadmin: bloqueada (RPC vía `rollback`, y
+  `invite-user` vía HTTP real con token de sesión legítimo).
+- Admin gestionando un analista de su propia empresa: permitido.
+- Mismo admin intentando mover ese analista a una empresa que no
+  administra (DUCKTAPE MEDIA GROUP): bloqueado.
+- Superadmin sin regresión: sigue viendo las 11 empresas del tenant.
+- `c.cuevas@adsemble.do` (admin real) logueado de verdad: auto-
+  seleccionado en "Adsemble" sin fricción (una sola empresa asignada),
+  formulario "Crear usuario" mostrando solo "Analista"/"Adsemble" como
+  únicas opciones, pantalla "Empresas asignadas" mostrando su
+  asignación real del backfill.
+
+**Commit**: `2df0203`, pusheado a `origin/main`.
