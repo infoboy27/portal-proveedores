@@ -341,13 +341,25 @@ export function OrderDetail() {
     [purchaseOrderReceipts, orderId],
   );
   const linkedInvoices = useMemo(() => invoices.filter((inv) => inv.purchaseOrderId === orderId), [invoices, orderId]);
-  // 1 Orden de Compra = 1 Factura (Key Players, 2026-09-01, item 1) -- la
-  // garantia real es el trigger de la base (check_one_active_invoice_per_po,
-  // schema-v20.sql), esto solo controla si se ofrece el boton de carga.
-  // Las 6 ordenes viejas con mas de una factura activa (excepcion historica,
-  // no se tocan) tambien caen aca: en cuanto tienen 1+ activa, dejan de
-  // admitir otra igual que cualquier orden nueva.
-  const hasActiveInvoice = useMemo(() => linkedInvoices.some((inv) => inv.status !== "rejected"), [linkedInvoices]);
+  // Ordenes con varias facturas (2026-09-03, pedido real: ordenes con
+  // varias lineas que reciben una factura por linea, o repartidas en el
+  // tiempo por ser un contrato) -- ya no es "1 Orden de Compra = 1
+  // Factura" a secas (esa regla original de Key Players, 2026-09-01, item
+  // 1, quedo reemplazada). La garantia real es el trigger de la base
+  // (check_one_active_invoice_per_po, schema-v33.sql), esto solo controla
+  // si se ofrece el boton de carga: admite una factura nueva mientras
+  // quede saldo sin facturar contra order.amount.
+  const invoicedTotal = useMemo(
+    () => linkedInvoices.filter((inv) => inv.status !== "rejected").reduce((sum, inv) => sum + inv.total, 0),
+    [linkedInvoices],
+  );
+  const remainingBalance = order ? order.amount - invoicedTotal : 0;
+  // order.amount null/0 (dato incompleto de BC) no bloquea -- mismo
+  // criterio conservador que el trigger de la base.
+  const isFullyInvoiced = useMemo(
+    () => !!order && order.amount > 0 && remainingBalance <= 0,
+    [order, remainingBalance],
+  );
 
   // Pedido de Jonatan (2026-09-02, "Cambios solicitados por Key Players",
   // item 6): no se puede cargar factura contra una orden que el proveedor
@@ -363,14 +375,6 @@ export function OrderDetail() {
       : order.confirmationStatus === "change_requested"
         ? "No puede cargar una factura mientras exista una solicitud de cambio pendiente para esta orden."
         : "No puede cargar una factura porque esta orden de compra todavia no ha sido confirmada.";
-  // Desde 2026-09-01 una orden nueva solo admite una factura activa (ver
-  // hasActiveInvoice arriba) -- este acumulado sigue sumando todo lo no
-  // rechazado por las 6 ordenes viejas que ya traen mas de una (excepcion
-  // historica, no se tocan), igual que en InvoiceDetail y domain.ts.
-  const invoicedTotal = useMemo(
-    () => linkedInvoices.filter((inv) => inv.status !== "rejected").reduce((sum, inv) => sum + inv.total, 0),
-    [linkedInvoices],
-  );
   const confirmPurchaseOrder = useDomainStore((s) => s.confirmPurchaseOrder);
 
   const canUpload =
@@ -605,13 +609,13 @@ export function OrderDetail() {
               <p className="mt-1 text-sm text-slate-600">
                 {uploadBlockedReason
                   ? uploadBlockedReason
-                  : hasActiveInvoice
-                    ? "Esta orden de compra ya tiene una factura asociada. Eliminala primero si fue un error para poder cargar otra."
+                  : isFullyInvoiced
+                    ? "Esta orden de compra ya tiene facturado el total de su monto. Eliminá o esperá a que se resuelva una factura existente para poder cargar otra."
                     : t("uploadInvoiceDescription")}
               </p>
               {uploadError && <p className="mt-2 text-sm text-rose-700">{uploadError}</p>}
             </div>
-            <Button onClick={() => fileInputRef.current?.click()} disabled={uploading || hasActiveInvoice || !!uploadBlockedReason}>
+            <Button onClick={() => fileInputRef.current?.click()} disabled={uploading || isFullyInvoiced || !!uploadBlockedReason}>
               {uploading ? "..." : t("uploadInvoice")}
             </Button>
             <input
@@ -769,7 +773,7 @@ export function OrderDetail() {
           {linkedInvoices.length > 0 && (
             <p className="mt-1 text-sm text-slate-600">
               Facturado: {formatCurrency(invoicedTotal)} de {formatCurrency(order.amount)} · Disponible:{" "}
-              {formatCurrency(order.amount - invoicedTotal)}
+              {formatCurrency(remainingBalance)}
             </p>
           )}
         </div>

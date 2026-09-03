@@ -634,17 +634,23 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
       throw new Error("Solo se permite subir la factura en PDF o como foto (JPG/PNG).");
     }
 
-    // Pedido Key Players (2026-09-01), item 1: 1 Orden de Compra = 1
-    // Factura. Este chequeo es solo para dar un mensaje claro ANTES de subir
-    // el archivo -- la garantia real es el trigger
-    // check_one_active_invoice_per_po (schema-v20.sql), que corre server-side
-    // sobre el INSERT mismo y no se puede saltar llamando la API directo.
+    // Ordenes con varias facturas (2026-09-03): ya no es "1 Orden de Compra
+    // = 1 Factura" a secas (esa regla original de Key Players, 2026-09-01,
+    // item 1, quedo reemplazada) -- admite una factura nueva mientras quede
+    // saldo sin facturar contra el monto de la orden. Este chequeo es solo
+    // para dar un mensaje claro ANTES de subir el archivo -- la garantia
+    // real es el trigger check_one_active_invoice_per_po (schema-v33.sql),
+    // que corre server-side sobre el INSERT mismo y no se puede saltar
+    // llamando la API directo.
     if (input.purchaseOrderId) {
-      const hasActiveInvoice = get().invoices.some(
-        (inv) => inv.purchaseOrderId === input.purchaseOrderId && inv.status !== "rejected",
-      );
-      if (hasActiveInvoice) {
-        throw new Error("Esta orden de compra ya tiene una factura asociada. Eliminala primero si fue un error.");
+      const order = get().purchaseOrders.find((po) => po.id === input.purchaseOrderId);
+      if (order && order.amount > 0) {
+        const invoicedTotal = get()
+          .invoices.filter((inv) => inv.purchaseOrderId === input.purchaseOrderId && inv.status !== "rejected")
+          .reduce((sum, inv) => sum + inv.total, 0);
+        if (invoicedTotal >= order.amount) {
+          throw new Error("Esta orden de compra ya tiene facturado el total de su monto. Eliminá o esperá a que se resuelva una factura existente.");
+        }
       }
     }
 

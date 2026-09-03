@@ -3483,3 +3483,66 @@ archivo (`rpc_update_user_profile`, `rpc_mark_invoice_paid`,
 quedaron duplicadas — cada una mantuvo el mismo orden de parámetros que
 su versión anterior, así que este bug fue exclusivo de
 `rpc_update_invoice_status`.
+
+---
+
+## 2026-09-03 (continuación) — Ordenes con varias facturas (una por línea, o repartidas en el tiempo)
+
+Jonatan reportó un caso real: órdenes de compra con varias líneas que
+reciben varias facturas del proveedor (una por línea, o repartidas en
+el tiempo por tratarse de un contrato). Probaron una orden de 3 líneas,
+cargaron 1 factura, y aunque la orden seguía "abierta" no dejaba cargar
+más.
+
+**Investigado antes de tocar nada** (dos capas, no una):
+
+1. Regla explícita existente: "1 Orden de Compra = 1 Factura" (Key
+   Players, 2026-09-01, item 1 — trigger
+   `check_one_active_invoice_per_po`, `schema-v20.sql`): bloqueaba
+   cualquier factura nueva en cuanto la orden tenía UNA no rechazada,
+   sin importar el monto restante. El propio `purchase_orders.status`
+   ya sincroniza `partially_invoiced` desde BC — el modelo de datos ya
+   anticipaba esto, la regla del portal lo bloqueaba en la práctica.
+2. Motivo más profundo, encontrado al revisar `bc-export-invoice`
+   (rediseño del 2026-09-02, "portal no postea nada, solo alimenta la
+   Sección General de la orden"): esa función pisa 3 campos de un solo
+   valor (`orderDate`, `Nº factura proveedor`, `NCF`) en cada
+   exportación — una 2ª factura exportada sobrescribiría los datos de
+   la 1ª en esos 3 campos (el PDF adjunto sí se acumula, eso no se
+   pierde).
+
+**Confirmado con Jonatan antes de implementar**: la orden en BC no
+cambia de estructura/monto mientras reciba facturas — es solo el
+vehículo de registro hasta que llega la última, momento en que se
+cierra. Es normal que las facturas lleguen en fechas distintas (no el
+mismo día), así que la Sección General mostrando "la última factura
+registrada" es aceptable — no hizo falta ningún cambio del lado de
+BC/AL.
+
+**Implementado**:
+- `schema-v33.sql`: `check_one_active_invoice_per_po` reemplazada —
+  ahora bloquea una factura nueva solo si la suma de facturas no
+  rechazadas ya alcanza `order.amount` (facturas con `total_amount`
+  todavía null por OCR pendiente cuentan como 0; `order.amount` en
+  null/0 no bloquea, mismo criterio conservador que el resto del
+  portal ante datos incompletos de BC).
+- `Orders.tsx`: reemplazado `hasActiveInvoice` (booleano, 1 factura
+  máximo) por `remainingBalance`/`isFullyInvoiced` (saldo contra el
+  monto de la orden) — mismo patrón que ya mostraba "Facturado X de Y
+  · Disponible Z" (esa UI ya estaba lista, solo la bloqueaba el
+  trigger viejo).
+- `domain.ts:uploadInvoice`: mismo cambio en el chequeo previo a la
+  carga (mensaje claro antes de tocar Storage).
+- `Invoices.tsx`: el selector de "orden para cargar factura" ya no
+  excluye una orden por tener 1+ factura — excluye solo las que ya
+  tienen su monto totalmente facturado.
+- Desplegado a sandbox y producción (mismo código, misma migración en
+  ambos ambientes).
+
+**Verificado en vivo, no solo aplicado** (orden real `CP-000230`, 3
+líneas, RD$450,000, sandbox): dentro de una transacción revertida, 3
+facturas de RD$150,000 cada una (una por línea) entraron sin problema
+— algo que antes fallaba siempre desde la 2ª. Una 4ª factura, con la
+orden ya completamente facturada, se bloqueó con el mensaje correcto
+("ya tiene facturado el total de su monto"). `rollback` al final, sin
+tocar datos reales.

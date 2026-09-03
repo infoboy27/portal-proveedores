@@ -56,28 +56,34 @@ export function InvoicesList() {
   // Ordenes del proveedor donde tiene sentido cargar una factura -- "las que
   // tenga la orden de compra" (pedido de Jonatan, plan 2026-08-26). Se
   // excluyen "draft" (todavia no es real en BC) y "closed" (ya se
-  // liquido). "partially_invoiced" se sigue incluyendo por las ordenes
-  // viejas que ya traen mas de una factura (excepcion historica, ver
-  // schema-v20.sql) -- para ordenes nuevas ya no deberia volver a darse.
+  // liquido). "partially_invoiced" se incluye a proposito: ordenes con
+  // varias lineas que reciben una factura por linea, o repartidas en el
+  // tiempo por ser un contrato (pedido real, 2026-09-03) -- ya no es
+  // excepcion historica, es el caso esperado.
   //
-  // 1 Orden de Compra = 1 Factura (Key Players, 2026-09-01, item 1): se
-  // excluyen ademas las ordenes que ya tienen una factura activa (status
-  // != rejected) -- la garantia real es el trigger de la base
-  // (check_one_active_invoice_per_po), esto es solo para no ofrecerlas en
-  // el selector.
-  const ordersWithActiveInvoice = useMemo(
-    () => new Set(invoices.filter((inv) => inv.status !== "rejected" && inv.purchaseOrderId).map((inv) => inv.purchaseOrderId!)),
-    [invoices],
-  );
+  // Ya no es "1 Orden de Compra = 1 Factura" a secas (esa regla original
+  // de Key Players, 2026-09-01, item 1, quedo reemplazada): se excluyen
+  // las ordenes que ya tienen facturado el total de su monto -- la
+  // garantia real es el trigger de la base
+  // (check_one_active_invoice_per_po, schema-v33.sql), esto es solo para
+  // no ofrecerlas en el selector.
+  const invoicedTotalByOrder = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const inv of invoices) {
+      if (inv.status === "rejected" || !inv.purchaseOrderId) continue;
+      totals.set(inv.purchaseOrderId, (totals.get(inv.purchaseOrderId) ?? 0) + inv.total);
+    }
+    return totals;
+  }, [invoices]);
   const openOrdersForSupplier = useMemo(() => {
     if (!isSupplier || !session.supplierId) return [];
     return purchaseOrders.filter(
       (po) =>
         po.vendorId === session.supplierId &&
         (po.status === "open" || po.status === "partially_invoiced") &&
-        !ordersWithActiveInvoice.has(po.id),
+        !(po.amount > 0 && (invoicedTotalByOrder.get(po.id) ?? 0) >= po.amount),
     );
-  }, [purchaseOrders, isSupplier, session.supplierId, ordersWithActiveInvoice]);
+  }, [purchaseOrders, isSupplier, session.supplierId, invoicedTotalByOrder]);
 
   const scoped = useMemo(
     () =>
