@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "@/i18n";
 import { useSessionStore } from "@/store/session";
 import { useDomainStore } from "@/store/domain";
@@ -66,6 +66,25 @@ export function Users() {
     try {
       await updateUser(editing.id, session.userId, { role, companyId: companyId || null, isActive });
       setEditing(null);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const setAdminCompanyAssignments = useDomainStore((s) => s.setAdminCompanyAssignments);
+  const fetchAdminCompanyAssignments = useDomainStore((s) => s.fetchAdminCompanyAssignments);
+  const [assigningCompanies, setAssigningCompanies] = useState<PortalUser | null>(null);
+  const [assignError, setAssignError] = useState<string | null>(null);
+
+  async function handleSaveAssignments(companyIds: string[]) {
+    if (!assigningCompanies) return;
+    setAssignError(null);
+    setSaving(true);
+    try {
+      await setAdminCompanyAssignments(assigningCompanies.id, companyIds);
+      setAssigningCompanies(null);
+    } catch (err) {
+      setAssignError(err instanceof Error ? err.message : "No fue posible guardar las empresas asignadas.");
     } finally {
       setSaving(false);
     }
@@ -193,6 +212,17 @@ export function Users() {
                           Resetear password
                         </Button>
                       )}
+                      {isSuperadmin && u.role === "admin" && (
+                        <Button
+                          variant="ghost"
+                          onClick={() => {
+                            setAssignError(null);
+                            setAssigningCompanies(u);
+                          }}
+                        >
+                          Empresas
+                        </Button>
+                      )}
                       {isSuperadmin && u.id !== session.userId && (
                         <Button variant="ghost" onClick={() => setDeleting(u)}>
                           Eliminar
@@ -219,8 +249,33 @@ export function Users() {
             key={editing.id}
             user={editing}
             saving={saving}
+            callerIsSuperadmin={isSuperadmin}
             onCancel={() => setEditing(null)}
             onSave={handleSave}
+          />
+        )}
+      </Modal>
+
+      <Modal
+        open={!!assigningCompanies}
+        onClose={() => {
+          setAssigningCompanies(null);
+          setAssignError(null);
+        }}
+        title="Empresas asignadas"
+      >
+        {assigningCompanies && (
+          <AssignCompaniesForm
+            key={assigningCompanies.id}
+            user={assigningCompanies}
+            saving={saving}
+            error={assignError}
+            fetchAssignments={fetchAdminCompanyAssignments}
+            onCancel={() => {
+              setAssigningCompanies(null);
+              setAssignError(null);
+            }}
+            onSave={handleSaveAssignments}
           />
         )}
       </Modal>
@@ -283,6 +338,7 @@ export function Users() {
           suppliers={suppliers}
           saving={saving}
           error={createError}
+          callerIsSuperadmin={isSuperadmin}
           onCancel={() => {
             setCreating(false);
             setCreateError(null);
@@ -333,18 +389,27 @@ function CreateUserForm({
   suppliers,
   saving,
   error,
+  callerIsSuperadmin,
   onCancel,
   onCreate,
 }: {
   suppliers: { id: string; vendorNumber: string; displayName: string }[];
   saving: boolean;
   error: string | null;
+  callerIsSuperadmin: boolean;
   onCancel: () => void;
   onCreate: (input: { email: string; role: UserRole; companyId: string; vendorId: string; username: string }) => void;
 }) {
+  // Key Players (2026-09-03), item 4: un admin (no superadmin) solo
+  // puede invitar analistas -- ofrecer los demas roles en el dropdown es
+  // enganoso, el backend los va a rechazar igual (invite-user, mismo
+  // criterio que rpc_update_user_profile). La empresa ya viene acotada
+  // sola: `companies` (el store) solo trae las empresas asignadas al
+  // admin gracias a la RLS de "companies" (schema-v29.sql).
+  const roleOptions = callerIsSuperadmin ? (Object.keys(ROLE_LABEL) as UserRole[]) : (["approver"] as UserRole[]);
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
-  const [role, setRole] = useState<UserRole>("supplier");
+  const [role, setRole] = useState<UserRole>(callerIsSuperadmin ? "supplier" : "approver");
   const [vendorId, setVendorId] = useState("");
   const companies = useDomainStore((s) => s.companies);
   const [companyId, setCompanyId] = useState("");
@@ -370,7 +435,7 @@ function CreateUserForm({
       <div>
         <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Rol</label>
         <Select value={role} onChange={(e) => setRole(e.target.value as UserRole)}>
-          {(Object.keys(ROLE_LABEL) as UserRole[]).map((r) => (
+          {roleOptions.map((r) => (
             <option key={r} value={r}>
               {ROLE_LABEL[r]}
             </option>
@@ -392,8 +457,8 @@ function CreateUserForm({
       )}
       <div>
         <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Empresa</label>
-        <Select value={companyId} onChange={(e) => setCompanyId(e.target.value)}>
-          <option value="">Sin empresa (global)</option>
+        <Select value={companyId} onChange={(e) => setCompanyId(e.target.value)} required={!callerIsSuperadmin}>
+          {callerIsSuperadmin && <option value="">Sin empresa (global)</option>}
           {companies.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
@@ -406,7 +471,7 @@ function CreateUserForm({
         <Button type="button" variant="ghost" onClick={onCancel} disabled={saving}>
           Cancelar
         </Button>
-        <Button type="submit" disabled={saving || (needsVendor && !vendorId)}>
+        <Button type="submit" disabled={saving || (needsVendor && !vendorId) || (!callerIsSuperadmin && !companyId)}>
           {saving ? "Invitando..." : "Invitar"}
         </Button>
       </div>
@@ -417,14 +482,21 @@ function CreateUserForm({
 function EditUserForm({
   user,
   saving,
+  callerIsSuperadmin,
   onCancel,
   onSave,
 }: {
   user: PortalUser;
   saving: boolean;
+  callerIsSuperadmin: boolean;
   onCancel: () => void;
   onSave: (role: UserRole, companyId: string, isActive: boolean) => void;
 }) {
+  // Item 4: un admin (no superadmin) solo puede editar analistas, y solo
+  // puede dejarlos como analistas -- rpc_update_user_profile
+  // (schema-v29.sql) rechaza cualquier otra cosa igual, esto es solo
+  // para no ofrecer una opcion que siempre va a fallar.
+  const roleOptions = callerIsSuperadmin ? (Object.keys(ROLE_LABEL) as UserRole[]) : (["approver"] as UserRole[]);
   const [role, setRole] = useState<UserRole>(user.role);
   const [companyId, setCompanyId] = useState(user.companyId ?? "");
   const [isActive, setIsActive] = useState(user.isActive);
@@ -443,8 +515,8 @@ function EditUserForm({
       </div>
       <div>
         <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Rol</label>
-        <Select value={role} onChange={(e) => setRole(e.target.value as UserRole)}>
-          {(Object.keys(ROLE_LABEL) as UserRole[]).map((r) => (
+        <Select value={role} onChange={(e) => setRole(e.target.value as UserRole)} disabled={!callerIsSuperadmin}>
+          {roleOptions.map((r) => (
             <option key={r} value={r}>
               {ROLE_LABEL[r]}
             </option>
@@ -475,5 +547,85 @@ function EditUserForm({
         </Button>
       </div>
     </form>
+  );
+}
+
+// Item 4 (Key Players): unica pantalla que administra
+// admin_company_assignments -- solo superadmin llega aca (gateada en
+// Users.tsx). Reemplaza el set completo al guardar (mismo criterio que
+// setAdminCompanyAssignments en domain.ts).
+function AssignCompaniesForm({
+  user,
+  saving,
+  error,
+  fetchAssignments,
+  onCancel,
+  onSave,
+}: {
+  user: PortalUser;
+  saving: boolean;
+  error: string | null;
+  fetchAssignments: (userId: string) => Promise<string[]>;
+  onCancel: () => void;
+  onSave: (companyIds: string[]) => void;
+}) {
+  const companies = useDomainStore((s) => s.companies);
+  const activeCompanies = useMemo(() => companies.filter((c) => !c.disabledAt), [companies]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchAssignments(user.id)
+      .then((ids) => {
+        if (!cancelled) setSelected(new Set(ids));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user.id, fetchAssignments]);
+
+  function toggle(companyId: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(companyId)) next.delete(companyId);
+      else next.add(companyId);
+      return next;
+    });
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-700">
+        Empresas que <strong>{user.email}</strong> puede administrar como Administrador. Fuera de esta lista, no va a
+        poder ver ni gestionar nada de esa empresa.
+      </p>
+      {loading ? (
+        <p className="text-sm text-slate-500">Cargando...</p>
+      ) : (
+        <div className="space-y-2">
+          {activeCompanies.map((c) => (
+            <label key={c.id} className="flex items-center gap-2 text-sm text-slate-700">
+              <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggle(c.id)} />
+              {c.name}
+            </label>
+          ))}
+          {activeCompanies.length === 0 && <p className="text-sm text-slate-500">No hay empresas activas.</p>}
+        </div>
+      )}
+      {error && <p className="text-sm text-rose-600">{error}</p>}
+      <div className="flex justify-end gap-2 pt-2">
+        <Button type="button" variant="ghost" onClick={onCancel} disabled={saving}>
+          Cancelar
+        </Button>
+        <Button type="button" onClick={() => onSave(Array.from(selected))} disabled={saving || loading}>
+          {saving ? "Guardando..." : "Guardar"}
+        </Button>
+      </div>
+    </div>
   );
 }

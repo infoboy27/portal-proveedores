@@ -181,6 +181,13 @@ interface DomainStore {
   // desde BC — es un campo manual que un admin ingresa en el portal. Ver
   // plan Fase A, seccion "Gap real encontrado para el punto 6".
   setInvoicePaymentDueDate: (invoiceId: string, paymentDueDate: string | null) => Promise<void>;
+  // Key Players (2026-09-03), item 4: empresas asignadas a un
+  // administrador (admin_company_assignments, schema-v29.sql) -- solo
+  // superadmin puede leer/escribir esto para OTRO usuario (RLS "superadmin
+  // manage"), asi que estas llamadas fallan solas si las hace cualquier
+  // otro rol.
+  fetchAdminCompanyAssignments: (userId: string) => Promise<string[]>;
+  setAdminCompanyAssignments: (userId: string, companyIds: string[]) => Promise<void>;
   // Dias 13-15: marca una factura "processed" como pagada. Registro
   // solo-portal (no sincroniza con BC, ver schema-v6.sql) — mismo patron
   // que rpc_confirm_purchase_order: unico camino de escritura, revalida rol
@@ -700,6 +707,26 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
       .eq("id", invoiceId);
     if (error) throw error;
     await get().fetchAll();
+  },
+
+  async fetchAdminCompanyAssignments(userId) {
+    const { data, error } = await supabase.from("admin_company_assignments").select("company_id").eq("user_id", userId);
+    if (error) throw error;
+    return (data ?? []).map((r) => r.company_id as string);
+  },
+
+  async setAdminCompanyAssignments(userId, companyIds) {
+    // Reemplaza el set completo -- mas simple y menos propenso a errores
+    // que calcular el diff. Ambas llamadas dependen 100% de RLS
+    // ("superadmin manage", schema-v29.sql) para la autorizacion real.
+    const { error: delError } = await supabase.from("admin_company_assignments").delete().eq("user_id", userId);
+    if (delError) throw delError;
+    if (companyIds.length > 0) {
+      const { error: insError } = await supabase
+        .from("admin_company_assignments")
+        .insert(companyIds.map((companyId) => ({ user_id: userId, company_id: companyId })));
+      if (insError) throw insError;
+    }
   },
 
   async markInvoicePaid(invoiceId, changedBy, paidAt, paymentReference) {

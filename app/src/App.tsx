@@ -62,12 +62,17 @@ function AuthBootstrap({ children }: { children: React.ReactNode }) {
         companyName: c.company_name as string,
       }));
 
-      // admin/superadmin ya ven todo sin importar la empresa (RLS los
-      // exime por completo, ver schema-v3.sql) -- se les agrega una
-      // opcion sintetica al principio del selector y arrancan ahi por
-      // defecto, para no perder ese alcance ahora que el selector
-      // realmente filtra client-side.
-      if (role === "admin" || role === "superadmin") {
+      // Solo superadmin ve todo sin importar la empresa (RLS lo exime por
+      // completo, ver schema-v3.sql) -- se le agrega una opcion sintetica
+      // al principio del selector y arranca ahi por defecto.
+      //
+      // Key Players (2026-09-03), item 4: `admin` YA NO tiene ese mismo
+      // alcance global -- companyRows arriba ya viene acotado solo a sus
+      // empresas asignadas (admin_company_assignments, RLS de
+      // "companies" en schema-v29.sql), asi que no se le agrega la
+      // opcion sintetica: elige entre sus empresas reales, igual que
+      // aprobador/proveedor.
+      if (role === "superadmin") {
         availableCompanies.unshift({ companyId: "__all__", companyName: "Todas las empresas", isGlobal: true });
       }
 
@@ -79,13 +84,13 @@ function AuthBootstrap({ children }: { children: React.ReactNode }) {
         availableCompanies[0] ??
         null;
 
-      // Key Players (2026-09-02), item 1/12/13: admin/superadmin arrancan
-      // en alcance global por diseño (no se les pide elegir). Para el
-      // resto de los roles, con 2+ empresas reales hay que confirmar
-      // explicitamente antes de poder trabajar -- con 1 sola, se
-      // autoselecciona sin friccion (nada que elegir de verdad).
+      // Key Players (2026-09-02/03), item 1/12/13: solo superadmin
+      // arranca en alcance global por diseño (no se le pide elegir). El
+      // resto de los roles -- admin incluido desde el item 4 -- con 2+
+      // empresas reales tiene que confirmar explicitamente antes de
+      // trabajar; con 1 sola, se autoselecciona sin friccion.
       const realCompanyCount = availableCompanies.filter((c) => !c.isGlobal).length;
-      const companyConfirmed = role === "admin" || role === "superadmin" || realCompanyCount <= 1;
+      const companyConfirmed = role === "superadmin" || realCompanyCount <= 1;
 
       setSession({
         userId,

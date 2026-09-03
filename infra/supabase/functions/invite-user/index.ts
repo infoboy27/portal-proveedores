@@ -53,6 +53,7 @@ Deno.serve(async (req: Request) => {
       headers: { "Content-Type": "application/json" },
     });
   }
+  const callerRole = callerProfile.role as string;
 
   let body: InviteRequest;
   try {
@@ -72,6 +73,35 @@ Deno.serve(async (req: Request) => {
       JSON.stringify({ ok: false, error: "vendorId es obligatorio para proveedor / rol interno de facturas recurrentes" }),
       { status: 400 },
     );
+  }
+
+  // Key Players (2026-09-03), item 4: un admin (no superadmin) solo puede
+  // invitar analistas ("approver") dentro de sus empresas asignadas --
+  // hallazgo real: sin esto, un admin podia invitar a otro usuario como
+  // admin o superadmin, o asignarlo a cualquier empresa. Mismo criterio
+  // que rpc_update_user_profile (schema-v29.sql).
+  if (callerRole === "admin") {
+    if (body.role !== "approver") {
+      return new Response(JSON.stringify({ ok: false, error: "Un administrador solo puede invitar analistas" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (!body.companyId) {
+      return new Response(JSON.stringify({ ok: false, error: "companyId es obligatorio" }), { status: 400 });
+    }
+    const { data: assignment } = await db
+      .from("admin_company_assignments")
+      .select("company_id")
+      .eq("user_id", callerAuth.user.id)
+      .eq("company_id", body.companyId)
+      .maybeSingle();
+    if (!assignment) {
+      return new Response(JSON.stringify({ ok: false, error: "No tenes autorizacion sobre esa empresa" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
   }
 
   const result = await provisionInvitedUser(db, {
