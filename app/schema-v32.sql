@@ -1,0 +1,26 @@
+-- Bug real reportado por Jonatan (2026-09-03): "los usuarios de Leidy
+-- Aquino y Veronica Tejeda no nos esta permitiendo aprobar la factura".
+--
+-- Causa: schema-v29.sql redefinió rpc_update_invoice_status agregando el
+-- alcance de admin (portal_admin_company_ids()), pero cambió el ORDEN de
+-- los parámetros (p_changed_by antes que p_status en vez de después).
+-- Como p_status es text y p_changed_by es uuid, Postgres los trata como
+-- una función DISTINTA en vez de reemplazar la original -- `create or
+-- replace` terminó creando un segundo overload en lugar de reemplazar el
+-- primero. El frontend llama este RPC con argumentos con nombre
+-- (`{p_invoice_id, p_status, p_changed_by}`, ver domain.ts:approveInvoice/
+-- rejectInvoice), y con dos overloads que tienen los mismos nombres de
+-- parámetro (solo en distinto orden posicional), Postgres no puede
+-- decidir cuál usar: "function ... is not unique". Afectaba a CUALQUIER
+-- rol intentando aprobar o rechazar una factura, no solo a estas dos
+-- usuarias -- simplemente fueron las primeras en toparse con él después
+-- del ítem 4.
+--
+-- Reproducido en vivo antes de este fix (sandbox y producción):
+--   select rpc_update_invoice_status(p_invoice_id => ..., p_status =>
+--   'approved', p_changed_by => ...); -- ERROR: function ... is not unique
+--
+-- Fix: eliminar el overload viejo (el que NO tiene el alcance de admin
+-- correcto), dejando un único rpc_update_invoice_status con la firma que
+-- ya usa el frontend y con la lógica correcta del ítem 4.
+drop function if exists public.rpc_update_invoice_status(uuid, text, uuid, text);

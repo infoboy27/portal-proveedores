@@ -3419,3 +3419,67 @@ crear el primer login real de producción (hoy `user_profiles` está
 vacía — nadie puede entrar todavía), configurar el backup automático
 (`docker-compose.backup.yml` ya está clonado pero no activado), y
 probar el flujo completo por navegador.
+
+---
+
+## 2026-09-03 (continuación) — Superadmin de producción, backup automático, y bug real: nadie podía aprobar facturas
+
+Jonatan pidió que el mismo superadmin de sandbox lo sea en producción.
+Con `user_profiles` de producción todavía vacía, no había forma de usar
+el flujo normal de `invite-user` (requiere un admin/superadmin YA
+autenticado) — se hizo el bootstrap inicial llamando directo la Admin
+API de GoTrue (`/auth/v1/invite` con `SERVICE_ROLE_KEY`, corrido en el
+propio servidor, nunca visto por mí) + insert manual en `user_profiles`
+para `w.deschamps@adsemble.do` y `jonathanmaria@gmail.com`, igual que
+sandbox. Luego se activó el backup automático
+(`docker-compose.backup.yml`, agregado permanentemente a `COMPOSE_FILE`)
+— primer dump verificado (252K) en `/data/adsemble/backups`, disco
+persistente, retención 14 días.
+
+**Bug real encontrado (reportado por Jonatan)**: "los correos me
+llegaron pero nunca me pidió setear mi password, ya tengo acceso" — el
+enlace de invitación estaba autenticando directo sin pasar por
+`/set-password`. Causa: al armar el `.env` de producción se dejó
+`ADDITIONAL_REDIRECT_URLS` vacío (a diferencia de sandbox, que tiene
+`https://proveedores.jfmcss.com/**`) — GoTrue no reconocía
+`/set-password` como redirect válido y caía al `SITE_URL` raíz,
+dejando al usuario logueado sin contraseña seteada. Corregido
+(`ADDITIONAL_REDIRECT_URLS=https://portalproveedores.adsemble.do/**`,
+`auth` reiniciado) — el link ya consumido de Jonatan se resolvió
+pidiéndole entrar directo a `/set-password` con la sesión todavía
+activa (no hizo falta reenviar correo); el de w.deschamps, al no
+haberse abierto todavía, quedó andando solo con el fix.
+
+**Bug real encontrado (reportado por Jonatan) — nadie podía aprobar
+facturas**: en sandbox, Leidy Aquino y Verónica Tejeda (ambas
+`approver`, empresa Adsemble) no podían aprobar una factura. Causa,
+confirmada en vivo y **no acotada a estas dos usuarias**: `schema-
+v29.sql` redefinió `rpc_update_invoice_status` agregando el alcance de
+admin (ítem 4), pero cambió el ORDEN de los parámetros (`p_changed_by`
+antes que `p_status`, al revés de la firma original). Como son tipos
+distintos (`uuid` vs `text`), Postgres no lo trató como un reemplazo —
+quedaron **dos funciones distintas con el mismo nombre** (`create or
+replace` creó un segundo overload en vez de pisar el primero). El
+frontend llama este RPC con argumentos con nombre
+(`domain.ts:approveInvoice/rejectInvoice`), y con dos overloads que
+comparten los mismos nombres de parámetro, Postgres no puede elegir
+cuál usar: `function rpc_update_invoice_status(...) is not unique`.
+Esto rompía la aprobación/rechazo de facturas para **cualquier** rol,
+en sandbox y en producción por igual (heredado al aplicar `schema-v29`
+ahí también) — reproducido en ambos ambientes antes del fix.
+
+**Corregido** (`schema-v32.sql`): `drop function` del overload viejo
+(el que no tenía el alcance de admin correcto), dejando un único
+`rpc_update_invoice_status` — aplicado y verificado en sandbox y
+producción. **Verificado en vivo, no solo aplicado**: simulando a Leidy
+Aquino (JWT real de su propio `user_id`) sobre una factura real
+`pending_approval` de Adsemble — pasó a `approved` sin error, revertido
+después (`rollback`, sin tocar datos reales).
+
+**Aprendizaje para el resto de las RPC tocadas en `schema-v29.sql`**:
+se confirmó contra `pg_proc` que las otras 4 funciones de ese mismo
+archivo (`rpc_update_user_profile`, `rpc_mark_invoice_paid`,
+`rpc_confirm_purchase_order`, `rpc_confirm_invoice_for_approval`) NO
+quedaron duplicadas — cada una mantuvo el mismo orden de parámetros que
+su versión anterior, así que este bug fue exclusivo de
+`rpc_update_invoice_status`.
