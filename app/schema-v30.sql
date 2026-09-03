@@ -1,0 +1,11 @@
+-- Corte a producción, Fase 3 (2026-09-03): replay completo de schema.sql..v29
+-- contra la base nueva de producción encontró una columna real de sandbox
+-- que ningún schema-v*.sql definía -- `purchase_orders.bc_id` (usada por
+-- bc-sync-orders/index.ts para deduplicar contra Business Central, ver
+-- líneas 177/188 de esa función). Tuvo que haberse agregado en algún
+-- momento con un ALTER directo contra sandbox que nunca se versionó.
+--
+-- Este archivo documenta y repara esa deriva -- de aquí en adelante, un
+-- ambiente nuevo levantado desde cero con schema.sql..v30 queda idéntico a
+-- sandbox otra vez.
+alter table purchase_orders add column if not exists bc_id text;

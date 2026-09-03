@@ -3302,3 +3302,120 @@ superadmin — antes del fix también hubiera tenido éxito.
   asignación real del backfill.
 
 **Commit**: `2df0203`, pusheado a `origin/main`.
+
+---
+
+## 2026-09-03 (continuación) — Cuenta de sugopeca@gmail.com vinculada a un vendor de prueba
+
+Jonatan reportó: logueado como proveedor con `sugopeca@gmail.com`, no
+aparecía el selector de empresas ni sus órdenes. Diagnosticado contra la
+base real, no asumido: `user_vendor_mapping` de ese usuario apuntaba a
+`V-0001 "Suplidor de Prueba (sugopeca)"` (0 órdenes reales, vendor de
+prueba) en vez del vendor real `PROV-002998 "SUPLIDORA GOMEZ PEREZ
+(SUGOPECA)"`, que sí existe con el mismo email y tiene vínculos reales en
+3 empresas (Adsemble: 2 órdenes reales; JUAN FABIAN y DUCKTAPE MEDIA
+GROUP: 0). Con una sola empresa mapeada, el gate de selección (item
+1/12/13) se autoselecciona sin preguntar — por eso no aparecía el
+selector: no es que faltara elegir, es que apuntaba al vendor
+equivocado.
+
+**Corregido**: reemplazado el mapping al vendor de prueba por los 3
+vínculos reales de `PROV-002998`, primario en Adsemble. Verificado en
+vivo.
+
+**Auditoría del resto de proveedores** (por pedido explícito de Jonatan,
+"y los demás suplidores?"): de las 7 cuentas `supplier`/`service_uploader`
+reales, solo `sugopeca` tenía este problema. Una sola cuenta más
+(`jmservicedo@gmail.com`, `PROV-000283`) sale en 0 órdenes, pero
+confirmado que ese vendor genuinamente no tiene órdenes en ningún lado
+— no es un mal mapeo, no requiere corrección. Nadie más quedó apuntando
+al vendor de prueba; ningún proveedor está sin vínculo de empresa.
+
+---
+
+## 2026-09-03 (continuación) — Fase 3 del corte a producción: Supabase + portal levantados, con datos reales de BC Production
+
+Jonatan pidió seguir con el ambiente de producción ya provisto en Fase
+1/2. Estado inicial verificado por SSH: solo Traefik corría en
+`52.156.154.91`; Supabase y el portal seguían sin levantar, y el árbol
+clonado en Fase 1 estaba desactualizado (portal solo hasta
+`schema-v6.sql`, de antes de casi todo lo hecho esta sesión —
+búsqueda de PROV-002998, cadencia de 1 min, botones de solicitar
+cambio, y sobre todo el ítem 4 completo).
+
+**Bloqueo real de la sandbox de herramientas**: el entorno bloqueó
+cualquier intento de leer o mover el valor de `BC_CLIENT_SECRET` (y
+luego `SMTP_PASS`) entre servidores vía mis propios comandos, aunque
+nunca se iban a imprimir en el chat. No se intentó rodear — se le pidió
+a Jonatan correr un solo comando que hace el relay servidor a servidor
+directamente desde su propia terminal (`ssh sandbox ... | ssh
+produccion ...`), fuera de mi sandbox de herramientas. El resto de los
+secretos (`JWT_SECRET`, `ANON_KEY`, `SERVICE_ROLE_KEY`, claves
+asimétricas JWKS, `POSTGRES_PASSWORD`, etc.) se generaron directo en el
+propio servidor de producción con los scripts oficiales del repo de
+Supabase self-hosted (`utils/generate-keys.sh`, `utils/add-new-auth-
+keys.sh`) — nunca pasaron por mí.
+
+**Hallazgo en vivo (sin adivinar)**: las credenciales OAuth de BC del
+sandbox (`BC_TENANT_ID`/`BC_CLIENT_ID`/`BC_CLIENT_SECRET`) funcionan
+igual contra BC **Production** (mismo App Registration de Azure AD,
+confirmado listando `api/v2.0/companies` de Production con ese mismo
+token) — no hizo falta pedir credenciales nuevas. De paso se obtuvieron
+los GUID reales de empresa en Production (idénticos a los que sandbox
+ya tenía guardados en `companies.bc_code` — los entornos Sandbox/
+Production de BC comparten los mismos GUID de empresa).
+
+**Implementado**:
+- DNS: `api.portalproveedores.adsemble.do` (A, proxied) creado en
+  Cloudflare, mismo target que `portalproveedores.adsemble.do`.
+- `.env` de producción completo: URLs (`SITE_URL`,
+  `API_EXTERNAL_URL`/`SUPABASE_PUBLIC_URL`), `BC_ENVIRONMENT=Production`,
+  y el resto de config no-secreta calcada de sandbox.
+- `docker-compose.override.yml` (Supabase) y `docker-compose.yml`
+  (portal) adaptados de los de sandbox: red `adsemble-network` en vez
+  de `winu-bot-signal-network`, dominios de producción. Se quitó
+  `BC_COMPANY_ID` del passthrough a `functions` — ya no lo lee ningún
+  Edge Function (el GUID por empresa vive en `companies.bc_code` desde
+  la Fase 2 de multiempresa).
+- Stack completo levantado (`docker compose up -d`): db, auth, rest,
+  storage, kong, meta, realtime, pooler, imgproxy, studio, edge-
+  functions, ocr-service, mail-templates — todos healthy.
+- Copiado el código actual completo (no el clon viejo de Fase 1) del
+  portal + las 29 migraciones (`schema.sql`..`schema-v29.sql`) +
+  `scripts/` de sync, y aplicadas en orden contra la base nueva.
+- `companies` sembrada igual que sandbox: 11 empresas con su
+  `bc_code` real, solo Adsemble activa (`disabled_at is null`) — mismo
+  criterio conservador que sandbox ("se prende una por una").
+- Crontab de producción instalado (mismas 4 cadencias que sandbox: PO
+  cada 1 min, recepciones cada 15, pagos cada 30, proveedores cada 6h),
+  con `PORTAL_SUPABASE_URL` apuntando al dominio de producción.
+
+**Bug real encontrado por el propio replay de migraciones** (no
+buscado a propósito): aplicar las 29 migraciones contra una base
+limpia y correr `bc-sync-orders` de verdad falló dos veces seguidas con
+`PGRST204` — `purchase_orders.bc_id` y luego 4 columnas de
+`purchase_orders_lines` (`bc_line_type`, `bc_line_object_number`,
+`bc_unit_cost`, `bc_tax_code`) que la función SÍ usa pero **ningún**
+`schema-v*.sql` del repo definía. Se habían agregado en algún momento
+con un `ALTER TABLE` directo contra sandbox que nunca se versionó —
+invisible mientras solo existiera un ambiente. Se comparó el esquema
+completo (`information_schema.columns` de las dos bases, no solo estas
+tablas) para confirmar que no quedaba más deriva, y también las
+funciones (`information_schema.routines`) — ambos diffs, limpios tras
+el fix. Documentado y reparado en `schema-v30.sql` y `schema-v31.sql`
+(`add column if not exists`, sin tocar sandbox que ya las tenía).
+
+**Verificado en vivo contra BC Production real** (no simulado): con el
+esquema ya alineado, se corrieron los 3 sync a mano —
+`sync-purchase-orders` (5 órdenes reales de Adsemble, ej. `CP-000213`
+por RD$12,508), `sync-purchase-receipts` (3 recepciones), `sync-
+vendors` (3,609 vendors reales de BC Production). App (`https://
+portalproveedores.adsemble.do/`) y API (`https://
+api.portalproveedores.adsemble.do/rest/v1/...`) responden 200 con TLS
+válido.
+
+**Pendiente, a propósito** (no se avanzó sin decisión explícita):
+crear el primer login real de producción (hoy `user_profiles` está
+vacía — nadie puede entrar todavía), configurar el backup automático
+(`docker-compose.backup.yml` ya está clonado pero no activado), y
+probar el flujo completo por navegador.
