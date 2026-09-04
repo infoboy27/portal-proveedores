@@ -649,7 +649,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
           .invoices.filter((inv) => inv.purchaseOrderId === input.purchaseOrderId && inv.status !== "rejected")
           .reduce((sum, inv) => sum + inv.total, 0);
         if (invoicedTotal >= order.amount) {
-          throw new Error("Esta orden de compra ya tiene facturado el total de su monto. Eliminá o esperá a que se resuelva una factura existente.");
+          throw new Error("Esta orden de compra ya tiene facturado el total de su monto. Elimine o espere a que se resuelva una factura existente.");
         }
       }
     }

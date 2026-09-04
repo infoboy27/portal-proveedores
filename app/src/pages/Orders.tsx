@@ -616,7 +616,7 @@ export function OrderDetail() {
                 {uploadBlockedReason
                   ? uploadBlockedReason
                   : isFullyInvoiced
-                    ? "Esta orden de compra ya tiene facturado el total de su monto. Eliminá o esperá a que se resuelva una factura existente para poder cargar otra."
+                    ? "Esta orden de compra ya tiene facturado el total de su monto. Elimine o espere a que se resuelva una factura existente para poder cargar otra."
                     : t("uploadInvoiceDescription")}
               </p>
               {uploadError && <p className="mt-2 text-sm text-rose-700">{uploadError}</p>}

@@ -40,7 +40,7 @@ function CompanyGate({
         <img src={logoAdsemble} alt="Adsemble" className="mb-4 h-10 w-auto" />
         <h1 className="text-lg font-semibold text-slate-950">Seleccione una empresa para continuar</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Tenes acceso a mas de una empresa. Elegi con cual vas a trabajar ahora.
+          Tiene acceso a mas de una empresa. Elija con cual va a trabajar ahora.
         </p>
         <div className="mt-5 space-y-2">
           {companies.map((c) => (
