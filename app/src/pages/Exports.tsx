@@ -52,7 +52,9 @@ function formatUpdated(value: string) {
 }
 
 function canExport(inv: Invoice) {
-  return inv.status === "approved" || inv.status === "ready_for_export";
+  // "export_error" tiene que poder reintentarse (2026-09-03) -- ver el
+  // mismo comentario en bc-export-invoice/index.ts:EXPORTABLE_STATUSES.
+  return inv.status === "approved" || inv.status === "ready_for_export" || inv.status === "export_error";
 }
 
 export function Exports() {

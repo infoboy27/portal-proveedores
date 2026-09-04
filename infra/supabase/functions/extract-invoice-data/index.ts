@@ -106,7 +106,19 @@ Deno.serve(async (req: Request) => {
     const patch: Record<string, string | number> = {};
     if (ocr.invoiceDate && !invoice.invoice_date) patch.invoice_date = ocr.invoiceDate;
     if (ocr.invoiceTaxNumber && !invoice.invoice_tax_number) patch.invoice_tax_number = ocr.invoiceTaxNumber;
-    if (ocr.invoiceNumber && !invoice.invoice_number) patch.invoice_number = ocr.invoiceNumber;
+    if (ocr.invoiceNumber && !invoice.invoice_number) {
+      patch.invoice_number = ocr.invoiceNumber;
+    } else if (!invoice.invoice_number) {
+      // Facturas de servicios (EDESUR y similares, 2026-09-03): no traen un
+      // "Numero de factura" etiquetado -- son recibos de consumo, no
+      // facturas comerciales (confirmado leyendo el texto real de una,
+      // ver docs/BITACORA.md). Pedido explicito de Jonatan: si el OCR no
+      // encontro numero de factura pero SI encontro el NCF, usar los
+      // ultimos 4 digitos del NCF como numero de factura -- mejor que
+      // dejarlo vacio y bloquear la confirmacion.
+      const ncf = ocr.invoiceTaxNumber ?? invoice.invoice_tax_number;
+      if (ncf && ncf.length >= 4) patch.invoice_number = ncf.slice(-4);
+    }
     if (ocr.totalAmount && !invoice.total_amount) patch.total_amount = ocr.totalAmount;
 
     if (Object.keys(patch).length > 0) {
