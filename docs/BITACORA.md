@@ -3546,3 +3546,129 @@ facturas de RD$150,000 cada una (una por línea) entraron sin problema
 orden ya completamente facturada, se bloqueó con el mensaje correcto
 ("ya tiene facturado el total de su monto"). `rollback` al final, sin
 tocar datos reales.
+
+## 2026-09-04 — CP-000229 no es un caso aislado: se reprodujo en CP-000232, y el "éxito" también resultó ser falso
+
+Jonatan reportó (`2doerror.jpg`) una segunda factura con "Error de
+exportación" — 05295, orden **CP-000232** — mismo error 404
+`BadRequest_ResourceNotFound: Resource not found for the segment
+'attachment'` que ya conocíamos de CP-000229 (ver entradas previas).
+
+Investigado en sandbox, solo lectura contra BC (nada escrito):
+
+- CP-000232 recibió el mismo tratamiento de prueba que CP-000231
+  (mismos 3 PDF, misma cantidad RD$139,745.38, orden distinta).
+- CP-000231 (control sano): las 3 facturas se exportaron en 9
+  segundos de diferencia total (2026-09-03 20:23:12–20:23:21). Hoy
+  las 3 siguen apareciendo intactas en el listado de adjuntos de BC.
+- CP-000232 (falla): 1ª factura (05144) exportada el 2026-09-04
+  13:28:48 sin error. 2ª factura (05295) intentada 10 minutos después
+  (13:38:53) — falló con el 404 de siempre.
+- Al leer HOY el listado real de adjuntos en BC vía la función
+  `bc-order-attachments` (autenticado como superadmin real, magic
+  link generado server-side, ver método abajo): **CP-000232 devuelve
+  `attachments: []` — vacío, incluida la 1ª factura que el portal
+  marcó "Exportada" sin ningún error**. Mismo resultado para
+  CP-000229. CP-000231 (el control de 9 segundos) sí devuelve sus 3
+  archivos con `byteSize` real.
+
+Esto es el hallazgo importante: no es solo que el 2º adjunto falle —
+el 1º, que reportó éxito en el momento del PATCH, terminó invisible
+en BC también. Hipótesis de trabajo (no confirmada, requiere acceso
+interno a BC): algún proceso de fondo sobre Incoming Documents /
+Document Capture se dispara entre adjuntos consecutivos cuando pasan
+minutos (no segundos) entre ellos, y deja el sub-recurso
+`attachments` del documento padre roto — el adjunto ya subido
+desaparece del listado y cualquier adjunto posterior sobre esa misma
+orden devuelve 404.
+
+**Impacto operativo real**: el equipo de Adsemble puede estar
+confiando en el estado "Exportada" del portal para asumir que el PDF
+quedó adjunto en BC, y en casos como este NO es así — no aparece en
+Datos Adjuntos de la orden. Reportado explícitamente en el documento
+de soporte.
+
+**Método de verificación** (documentado porque se reutiliza): sin
+Postgres password ni BC_CLIENT_SECRET jamás impresos en pantalla —
+`generate_link` de GoTrue admin invocado en el propio servidor
+(`ssh` + `set -a; . .env; set +a; curl ...`, la clave nunca sale del
+comando remoto), navegado con `gstack browse`, `access_token`
+extraído de `localStorage` y usado para invocar `bc-order-attachments`
+(función ya existente, de solo lectura) contra las 3 órdenes. Cero
+escrituras contra BC en todo el proceso — aprendida la lección de la
+vez anterior que se tocó `orderDate`/campos fiscales reales por
+error.
+
+Actualizado `.gstack/qa-reports/bc-support-cp229-attachments.md` con
+toda esta evidencia nueva — el reporte para soporte de Microsoft/BC
+ahora cubre 2 órdenes y una hipótesis concreta, no solo 1 registro
+aislado. Pendiente: decidir con Jonatan si se envía ya a soporte.
+
+## 2026-09-04 (continuación) — RESUELTO sin soporte externo: BC tiene DOS mecanismos de adjuntos y estábamos usando el frágil
+
+Jonatan empujó de vuelta sobre la conclusión anterior: *"siento que
+queremos delegar el fix en un tercero, pero yo se que tu puedes
+arreglarlo, asi que arreglalo por favor"*. Tenía razón — la conclusión
+de "esto es de BC, hay que escalarlo" era prematura.
+
+**Causa raíz**: BC expone dos entidades de adjuntos distintas sobre el
+mismo documento, y veníamos usando la frágil:
+
+| | `/attachments` (la que usábamos) | `/documentAttachments` (la nueva) |
+|---|---|---|
+| Tabla | `Incoming Document Attachment` (133) | `Document Attachment` (1173) |
+| UI | Documentos entrantes | FactBox "Documentos adjuntos" |
+| Document Capture | sí | no |
+| Resultado | 204 y el archivo después no está | funciona, hasta en las órdenes rotas |
+
+Se descubrió consultando el `$metadata` real de la API v2.0 del tenant
+(`EntitySet Name="documentAttachments"` existe, y `purchaseOrder` tiene
+`NavigationProperty Name="documentAttachments"` con `parentType` =
+`Purchase Order`) — o sea, estaba disponible todo este tiempo, sin
+necesidad de ninguna extensión AL nueva.
+
+**Lo más grave que salió a la luz**: el PATCH del mecanismo viejo
+devolvía **204 (éxito)** y el archivo después no estaba. El portal
+marcaba "Exportada" y el equipo asumía que el PDF estaba en la orden.
+Auditadas las 11 facturas exportadas del sandbox contra lo que BC
+realmente tenía: **2 víctimas silenciosas** (`1823`/CP-000229 y
+`05144`/CP-000232), reparadas re-adjuntando el PDF **sin re-exportar**
+(re-exportar habría pisado los datos fiscales de la factura más
+reciente en la orden, contra la regla de "última factura gana").
+Auditoría repetida después: **0 faltantes**.
+
+**Implementado**:
+- `_shared/bc-client.ts`: `bcAttachDocumentFile()` sobre
+  `/documentAttachments`, que **relee el archivo desde BC y falla si el
+  tamaño no coincide** — nunca más un "Exportada" que miente. Más
+  `bcListDocumentAttachments()` y `bcGetDocumentAttachmentContent()`.
+  `bcAttachFile()` (la vieja) queda sin callers, documentada.
+- `bc-export-invoice/index.ts`: usa la función nueva.
+- `bc-order-attachments/index.ts`: lista los dos mecanismos juntos
+  (`source: "document" | "incoming"`), y la descarga prueba el nuevo y
+  cae al viejo si el id no vive ahí — sin cambiar el contrato con el
+  frontend.
+- `Orders.tsx`: `formatBytes(0)` muestra `—` en vez de `0 KB` (BC
+  devuelve `byteSize: 0` los primeros segundos tras crear el adjunto;
+  decir "0 KB" sugería archivo vacío, justo la confusión de este bug).
+
+**Verificado en vivo, no solo aplicado**:
+- Sobre las DOS órdenes rotas, con los PDF reales: POST 201 → PATCH 204
+  → GET de vuelta 200, **bytes idénticos** (md5 igual, 131418 y 70202).
+- Las 2 facturas trabadas exportaron por el flujo real del portal.
+- El escenario exacto que fallaba (2º adjunto sobre la misma orden,
+  minutos después) probado a propósito con 05148 sobre CP-000232:
+  funcionó, `byteSize` real en los dos.
+- Descarga verificada por las dos rutas (nueva y fallback histórico),
+  HTTP 200 y cabecera `%PDF-1.7` válida.
+- UI real (sesión autenticada): CP-000232 muestra sus 3 adjuntos con
+  tamaños correctos, sin errores de consola.
+- Producción: `documentAttachments` confirmado en el entorno
+  `Production` de BC **antes** de desplegar. Desplegado (functions +
+  frontend). Sin facturas exportadas todavía, nada que reparar.
+
+**Lección**: "el proveedor lo tiene roto" puede ser cierto y aun así no
+ser el final del camino. El mecanismo estaba roto de verdad (falla
+hasta en la interfaz nativa de BC), pero había una segunda puerta
+documentada en el propio `$metadata` del tenant. Antes de escalar a un
+tercero, agotar el catálogo de lo que la plataforma ya ofrece.

@@ -14,7 +14,12 @@
 // approver solo las de su empresa; supplier/service_uploader solo las de
 // sus propios vendor_id (via user_vendor_mapping).
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { bcListAttachments, bcGetAttachmentContent } from "../_shared/bc-client.ts";
+import {
+  bcListAttachments,
+  bcGetAttachmentContent,
+  bcListDocumentAttachments,
+  bcGetDocumentAttachmentContent,
+} from "../_shared/bc-client.ts";
 
 interface RequestBody {
   orderId: string;
@@ -109,7 +114,19 @@ Deno.serve(async (req: Request) => {
       if (!body.attachmentId) {
         return new Response(JSON.stringify({ ok: false, error: "Falta attachmentId" }), { status: 400 });
       }
-      const bcRes = await bcGetAttachmentContent(bcCompanyId, parentPath, body.attachmentId);
+      // Los dos mecanismos de adjuntos de BC conviven aca (ver el comentario
+      // grande en _shared/bc-client.ts): desde 2026-09-04 el portal escribe
+      // en documentAttachments (tabla 1173), pero siguen existiendo adjuntos
+      // viejos en /attachments (Incoming Documents) y el equipo de Adsemble
+      // puede adjuntar por cualquiera de los dos desde BC. El frontend manda
+      // solo el id, asi que probamos el mecanismo nuevo primero y caemos al
+      // viejo si ese id no vive ahi -- sin tener que cambiar el contrato.
+      let bcRes: Response;
+      try {
+        bcRes = await bcGetDocumentAttachmentContent(bcCompanyId, parentPath, body.attachmentId);
+      } catch {
+        bcRes = await bcGetAttachmentContent(bcCompanyId, parentPath, body.attachmentId);
+      }
       const contentType = bcRes.headers.get("content-type") ?? "application/octet-stream";
       const fileName = body.fileName ?? "adjunto";
       return new Response(bcRes.body, {
@@ -120,16 +137,45 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    const attachments = await bcListAttachments(bcCompanyId, parentPath);
+    // Se listan los DOS mecanismos y se muestran juntos: el equipo de
+    // Adsemble no distingue (ni tiene por que) entre "Documentos adjuntos" y
+    // "Documentos entrantes" al mirar una orden -- quiere ver los archivos.
+    // Si uno de los dos falla (el de Incoming Documents viene fallando en
+    // ordenes puntuales, justamente), no se cae el listado entero: se
+    // devuelve lo que si se pudo leer.
+    const [documentAttachments, incomingAttachments] = await Promise.all([
+      bcListDocumentAttachments(bcCompanyId, parentPath).catch((err) => {
+        console.error(`documentAttachments (${order.order_number}): ${err}`);
+        return [];
+      }),
+      bcListAttachments(bcCompanyId, parentPath).catch((err) => {
+        console.error(`attachments/incoming (${order.order_number}): ${err}`);
+        return [];
+      }),
+    ]);
+
     return new Response(
       JSON.stringify({
         ok: true,
-        attachments: attachments.map((a) => ({
-          id: a.id,
-          fileName: a.fileName,
-          byteSize: a.byteSize,
-          lastModifiedDateTime: a.lastModifiedDateTime,
-        })),
+        attachments: [
+          // byteSize viene siempre 0 en documentAttachments -- BC no lo
+          // calcula en esa vista. Se manda tal cual y la UI lo muestra como
+          // "-" en vez de inventar un "0 KB" que seria mentira.
+          ...documentAttachments.map((a) => ({
+            id: a.id,
+            fileName: a.fileName,
+            byteSize: a.byteSize,
+            lastModifiedDateTime: a.lastModifiedDateTime,
+            source: "document" as const,
+          })),
+          ...incomingAttachments.map((a) => ({
+            id: a.id,
+            fileName: a.fileName,
+            byteSize: a.byteSize,
+            lastModifiedDateTime: a.lastModifiedDateTime,
+            source: "incoming" as const,
+          })),
+        ],
       }),
       { headers: { "Content-Type": "application/json" } },
     );

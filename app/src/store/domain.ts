@@ -162,7 +162,7 @@ interface DomainStore {
   // sincronizado aparte solo para mostrar una lista.
   fetchOrderAttachments: (
     orderId: string,
-  ) => Promise<{ id: string; fileName: string; byteSize: number; lastModifiedDateTime: string }[]>;
+  ) => Promise<{ id: string; fileName: string; byteSize: number; lastModifiedDateTime: string; source?: "document" | "incoming" }[]>;
   downloadOrderAttachment: (orderId: string, attachmentId: string, fileName: string, mode?: "view" | "download") => Promise<void>;
   // Onboarding real (2026-08-20): invita un login nuevo de verdad, via la
   // Edge Function invite-user (Admin API + user_profiles + user_vendor_mapping
@@ -813,7 +813,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
       throw parsedMessage ? new Error(parsedMessage) : error;
     }
     if (!data?.ok) throw new Error(data?.error ?? "No se pudieron obtener los adjuntos de la orden");
-    return data.attachments as { id: string; fileName: string; byteSize: number; lastModifiedDateTime: string }[];
+    return data.attachments as { id: string; fileName: string; byteSize: number; lastModifiedDateTime: string; source?: "document" | "incoming" }[];
   },
 
   async downloadOrderAttachment(orderId, attachmentId, fileName, mode = "download") {

@@ -142,6 +142,13 @@ export async function bcPatch<T>(companyId: string, path: string, body: unknown,
 // binario via PATCH a la propiedad de streaming "attachmentContent" (nombre
 // confirmado en sandbox via el mediaEditLink devuelto por el registro creado
 // — la API v2.0 NO usa "/content" como en otras APIs OData de BC).
+//
+// OJO (2026-09-04): esta funcion usa /attachments, que en BC esta respaldado
+// por "Incoming Document Attachment" (tabla 133) -- el mecanismo que resulto
+// estar roto en este tenant (ver bcAttachDocumentFile abajo y
+// .gstack/qa-reports/bc-support-cp229-attachments.md). YA NO LA USA NADIE
+// para escribir; queda solo por si hace falta volver a diagnosticar ese
+// camino. Para adjuntar de verdad, usar bcAttachDocumentFile.
 export async function bcAttachFile(
   companyId: string,
   parentPath: string,
@@ -164,6 +171,110 @@ export async function bcAttachFile(
     throw new Error(`BC attachment content PATCH -> HTTP ${res.status} ${await res.text()}`);
   }
   return created;
+}
+
+// === documentAttachments: el camino que SI funciona (2026-09-04) ===
+//
+// BC expone DOS mecanismos de adjuntos distintos sobre el mismo documento, y
+// solo uno de los dos es confiable en este tenant:
+//
+//   1. /attachments  -> tabla "Incoming Document Attachment" (133). Pasa por
+//      la maquinaria de Documentos Entrantes / Document Capture. Es el que
+//      veniamos usando y el que se rompio: el POST de metadata devuelve 201,
+//      el PATCH de contenido devuelve 204 la primera vez, y minutos despues
+//      el adjunto desaparece del listado y CUALQUIER adjunto posterior sobre
+//      esa misma orden falla con 404 "Resource not found for the segment
+//      'attachment'". Reproducido en CP-000229 y CP-000232; falla tambien
+//      dentro de la interfaz nativa de BC ("Error al intentar mostrar el
+//      informe"), o sea que no es de nuestra integracion.
+//
+//   2. /documentAttachments -> tabla "Document Attachment" (1173), el
+//      FactBox "Documentos adjuntos" de toda la vida. No toca Documentos
+//      Entrantes en absoluto.
+//
+// Verificado en vivo (2026-09-04) contra las DOS ordenes rotas, con los PDF
+// reales de las facturas que estaban trabadas: POST 201 -> PATCH contenido
+// 204 -> GET de vuelta 200 con los bytes IDENTICOS al original (md5 igual,
+// 131418 y 70202 bytes). Es decir, el mismo registro que rechazaba el
+// mecanismo 1 acepta el mecanismo 2 sin problema.
+//
+// Nota: el listado de documentAttachments devuelve siempre byteSize 0 (BC no
+// lo calcula en esa vista), asi que NO sirve para verificar que el contenido
+// subio -- por eso bcAttachDocumentFile verifica leyendo el contenido de
+// vuelta, ver abajo.
+export interface BcDocumentAttachment {
+  id: string;
+  fileName: string;
+  byteSize: number;
+  parentId: string;
+  lastModifiedDateTime: string;
+}
+
+export async function bcListDocumentAttachments(
+  companyId: string,
+  parentPath: string,
+): Promise<BcDocumentAttachment[]> {
+  const res = await bcGet<{ value: BcDocumentAttachment[] }>(companyId, `${parentPath}/documentAttachments`);
+  return res.value;
+}
+
+export async function bcGetDocumentAttachmentContent(
+  companyId: string,
+  parentPath: string,
+  attachmentId: string,
+): Promise<Response> {
+  const res = await bcFetch(
+    companyPath(companyId, `${parentPath}/documentAttachments(${attachmentId})/attachmentContent`),
+    "standard",
+  );
+  if (!res.ok) {
+    throw new Error(`BC GET documentAttachment content -> HTTP ${res.status} ${await res.text()}`);
+  }
+  return res;
+}
+
+// Adjunta un archivo a un documento de BC y NO devuelve exito hasta haber
+// leido el contenido de vuelta y confirmado que el tamaño coincide.
+//
+// Esa verificacion no es paranoia: el bug que nos costo dias fue exactamente
+// que BC devolvia 204 (exito) en el PATCH y el archivo despues no estaba. El
+// portal marcaba la factura "Exportada" y el equipo de Adsemble asumia que el
+// PDF estaba en la orden cuando no lo estaba. Preferimos un export_error
+// honesto y reintentable antes que un "exito" que miente.
+export async function bcAttachDocumentFile(
+  companyId: string,
+  parentPath: string,
+  fileName: string,
+  bytes: Uint8Array,
+  contentType: string,
+): Promise<{ id: string; verifiedBytes: number }> {
+  const created = await bcPost<{ id: string }>(companyId, `${parentPath}/documentAttachments`, {
+    fileName,
+    parentType: "Purchase Order",
+  });
+
+  const res = await bcFetch(
+    companyPath(companyId, `${parentPath}/documentAttachments(${created.id})/attachmentContent`),
+    "standard",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": contentType, "If-Match": "*" },
+      body: bytes,
+    },
+  );
+  if (!res.ok) {
+    throw new Error(`BC documentAttachment content PATCH -> HTTP ${res.status} ${await res.text()}`);
+  }
+
+  const readBack = await bcGetDocumentAttachmentContent(companyId, parentPath, created.id);
+  const verifiedBytes = (await readBack.arrayBuffer()).byteLength;
+  if (verifiedBytes !== bytes.byteLength) {
+    throw new Error(
+      `BC acepto el adjunto pero al leerlo de vuelta no coincide: subimos ${bytes.byteLength} bytes y BC devolvio ${verifiedBytes}. No se marca como exportada.`,
+    );
+  }
+
+  return { id: created.id, verifiedBytes };
 }
 
 // Lectura de adjuntos (Key Players, 2026-09-01, item 5) -- /attachments es

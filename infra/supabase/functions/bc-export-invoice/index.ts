@@ -31,14 +31,21 @@
 // sigue disponible en el historial de git (commit "pedido Key Players --
 // 1 OC = 1 Factura...", 2026-09-01) para reactivarla.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { bcPatch, bcAttachFile } from "../_shared/bc-client.ts";
+import { bcPatch, bcAttachDocumentFile } from "../_shared/bc-client.ts";
 
 interface ExportRequest {
   invoiceId: string;
   changedBy: string | null;
 }
 
-const EXPORTABLE_STATUSES = new Set(["approved", "ready_for_export"]);
+// "export_error" tiene que poder reintentarse (2026-09-03, bug real
+// reportado: una factura con un fallo de BC transitorio -- ej. un 404
+// puntual del adjunto -- quedaba atrapada para siempre, porque esta misma
+// lista era el unico filtro y no la incluia. Sin esto, ni el boton
+// "Exportar ahora" ni "Reintentar fallidas" (Exports.tsx) podian volver a
+// intentarlo -- la falla se convertia en el motivo por el que nunca se
+// podia reintentar.
+const EXPORTABLE_STATUSES = new Set(["approved", "ready_for_export", "export_error"]);
 
 function admin() {
   return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
@@ -173,16 +180,34 @@ Deno.serve(async (req: Request) => {
       await bcPatch(bcCompanyId, `/purchaseOrderFiscals(${order.bc_id})`, fiscalPatch, "custom");
     }
 
-    // 3. Adjuntar el PDF de la factura a la ORDEN (Datos adjuntos), si ya
-    // fue subido a Storage. Mismo mecanismo (/attachments, API estandar)
-    // que ya se usaba para adjuntar a la factura separada -- ahora
-    // apuntado a la orden en vez de a un documento nuevo.
+    // 3. Adjuntar el PDF de la factura a la ORDEN (Documentos adjuntos), si
+    // ya fue subido a Storage.
+    //
+    // 2026-09-04: cambiado de /attachments a /documentAttachments. El
+    // primero (Incoming Document Attachment, tabla 133) resulto estar roto
+    // en este tenant: devolvia 204 en el PATCH y el archivo despues no
+    // estaba, y ademas dejaba la orden en un estado donde todo adjunto
+    // posterior fallaba con 404 -- pasaba tambien adjuntando a mano dentro
+    // de BC, o sea que no era nuestro codigo. /documentAttachments (tabla
+    // 1173, el FactBox de siempre) funciona sin problema sobre las MISMAS
+    // ordenes rotas, verificado byte a byte. Detalle completo en
+    // _shared/bc-client.ts y en .gstack/qa-reports/bc-support-cp229-attachments.md.
+    //
+    // bcAttachDocumentFile ademas relee el archivo desde BC y falla si el
+    // tamaño no coincide -- asi nunca mas marcamos "Exportada" una factura
+    // cuyo PDF no quedo realmente en la orden.
     let attached = false;
     if (invoice.file_path) {
       const { data: fileBlob, error: downloadErr } = await db.storage.from("invoices").download(invoice.file_path);
       if (downloadErr) throw new Error(`No se pudo leer el PDF de Storage: ${downloadErr.message}`);
       const bytes = new Uint8Array(await fileBlob.arrayBuffer());
-      await bcAttachFile(bcCompanyId, `/purchaseOrders(${order.bc_id})`, invoice.filename ?? "factura.pdf", bytes, "application/pdf");
+      await bcAttachDocumentFile(
+        bcCompanyId,
+        `/purchaseOrders(${order.bc_id})`,
+        invoice.filename ?? "factura.pdf",
+        bytes,
+        "application/pdf",
+      );
       attached = true;
     }
 

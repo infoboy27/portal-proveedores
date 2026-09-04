@@ -36,7 +36,11 @@ const STATUS_TONE: Record<PurchaseOrderStatus, string> = {
 };
 
 const formatBytes = (bytes: number) => {
-  if (!bytes) return "0 KB";
+  // BC no calcula byteSize en el listado de "Documentos adjuntos"
+  // (documentAttachments siempre devuelve 0) -- mostrar "0 KB" seria decir
+  // que el archivo esta vacio, que es justo la confusion que queremos evitar
+  // despues del bug de adjuntos de 2026-09-04. Tamaño desconocido = "-".
+  if (!bytes) return "—";
   const units = ["B", "KB", "MB", "GB"];
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${(bytes / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
@@ -396,7 +400,9 @@ export function OrderDetail() {
   // en el store global de dominio a proposito (ver comentario en
   // domain.ts:fetchOrderAttachments), se pide en vivo cada vez que se abre
   // el detalle de esta orden puntual.
-  const [attachments, setAttachments] = useState<{ id: string; fileName: string; byteSize: number; lastModifiedDateTime: string }[] | null>(null);
+  const [attachments, setAttachments] = useState<
+    { id: string; fileName: string; byteSize: number; lastModifiedDateTime: string; source?: "document" | "incoming" }[] | null
+  >(null);
   const [attachmentsError, setAttachmentsError] = useState<string | null>(null);
   const [loadingAttachments, setLoadingAttachments] = useState(false);
   const [downloadingAttachmentId, setDownloadingAttachmentId] = useState<string | null>(null);
