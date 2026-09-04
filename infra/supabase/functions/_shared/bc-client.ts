@@ -241,16 +241,20 @@ export async function bcGetDocumentAttachmentContent(
 // portal marcaba la factura "Exportada" y el equipo de Adsemble asumia que el
 // PDF estaba en la orden cuando no lo estaba. Preferimos un export_error
 // honesto y reintentable antes que un "exito" que miente.
+// parentType tiene que coincidir con el tipo de documento padre: BC lo
+// valida contra el enum attachmentEntityBufferDocumentType ("Purchase
+// Order" para /purchaseOrders, "Purchase Invoice" para /purchaseInvoices).
 export async function bcAttachDocumentFile(
   companyId: string,
   parentPath: string,
   fileName: string,
   bytes: Uint8Array,
   contentType: string,
+  parentType: "Purchase Order" | "Purchase Invoice" = "Purchase Order",
 ): Promise<{ id: string; verifiedBytes: number }> {
   const created = await bcPost<{ id: string }>(companyId, `${parentPath}/documentAttachments`, {
     fileName,
-    parentType: "Purchase Order",
+    parentType,
   });
 
   const res = await bcFetch(

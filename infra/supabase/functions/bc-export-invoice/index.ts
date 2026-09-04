@@ -31,7 +31,7 @@
 // sigue disponible en el historial de git (commit "pedido Key Players --
 // 1 OC = 1 Factura...", 2026-09-01) para reactivarla.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { bcPatch, bcAttachDocumentFile } from "../_shared/bc-client.ts";
+import { bcPatch, bcPost, bcAttachDocumentFile } from "../_shared/bc-client.ts";
 
 interface ExportRequest {
   invoiceId: string;
@@ -64,6 +64,107 @@ async function markError(db: ReturnType<typeof admin>, invoiceId: string, change
     changed_by: changedBy,
     reason,
   });
+}
+
+// Grupos de registro de proveedor que NO emiten NCF: el comprobante lo
+// emite Adsemble, no el proveedor. Confirmado contra BC (pantalla "Grupos
+// registro proveedor": los tres tienen "Permitir emitir NCF" marcado, con
+// sus propias series -- ECF PROVIN, ECF GTOMEN, ECF P EX) y contra el
+// listado que envio el equipo de Adsemble el 2026-09-04, hoja "Proveedores
+// NO emite NCF": "Clasificaciones incluidas: PROVINFORM, GASMENOR e INT"
+// -- 1,457 proveedores.
+//
+// GASMENOR faltaba (2026-09-04). Sin esto, toda factura de un proveedor de
+// gasto menor (62 en produccion: cajas chicas, tarjetas corporativas,
+// reposiciones de fondo) se caia al exportar con "La factura no tiene NCF",
+// pidiendo un dato que ese proveedor por definicion no emite.
+const NCF_EXEMPT_POSTING_GROUPS = ["PROVINFORM", "INT", "GASMENOR"];
+
+// Crea la Factura de Compra en BC para una factura del portal que no tiene
+// orden de compra. Ver el comentario grande en el punto de llamada.
+async function exportInvoiceWithoutOrder(
+  db: ReturnType<typeof admin>,
+  invoice: Record<string, unknown>,
+): Promise<{ bcInvoiceId: string; bcInvoiceNumber: string; attached: boolean }> {
+  if (!invoice.vendor_id) {
+    throw new Error("La factura no tiene orden de compra NI proveedor asignado -- no hay a nombre de quien crearla en Business Central.");
+  }
+  if (!invoice.company_id) {
+    throw new Error("La factura no tiene empresa asignada -- no se sabe en cual empresa de Business Central crearla.");
+  }
+
+  const { data: companyRow, error: companyErr } = await db
+    .from("companies")
+    .select("bc_code")
+    .eq("id", invoice.company_id as string)
+    .single();
+  if (companyErr || !companyRow?.bc_code) {
+    throw new Error(`No se encontro el codigo de BC para la empresa de la factura: ${companyErr?.message}`);
+  }
+  const bcCompanyId = companyRow.bc_code as string;
+
+  const { data: vendor, error: vendorErr } = await db
+    .from("vendors")
+    .select("*")
+    .eq("id", invoice.vendor_id as string)
+    .single();
+  if (vendorErr || !vendor) throw new Error(`Proveedor no encontrado: ${vendorErr?.message}`);
+  if (!vendor.vendor_number) {
+    throw new Error("El proveedor no tiene numero de Business Central (vendor_number) -- correr bc-sync-vendors primero.");
+  }
+
+  const ncfExempt = NCF_EXEMPT_POSTING_GROUPS.includes(vendor.vendor_posting_group);
+  if (!ncfExempt && !invoice.invoice_tax_number) {
+    throw new Error("La factura no tiene NCF (invoice_tax_number) -- sin ese dato Business Central no la deja postear.");
+  }
+  if (!invoice.invoice_date) {
+    throw new Error("La factura no tiene fecha -- es obligatoria para crear el documento en Business Central.");
+  }
+
+  // 1. Cabecera. postingDate = invoiceDate: el portal no decide periodos
+  // contables, y dejarla vacia hace que BC use la fecha de trabajo del
+  // usuario de servicio, que no tiene relacion con la factura.
+  const created = await bcPost<{ id: string; number: string }>(bcCompanyId, "/purchaseInvoices", {
+    vendorNumber: vendor.vendor_number,
+    invoiceDate: invoice.invoice_date,
+    postingDate: invoice.invoice_date,
+    vendorInvoiceNumber: invoice.invoice_number ?? invoice.invoice_tax_number,
+  });
+
+  // 2. NCF, via el custom API propio (page 58004) -- no esta en la API
+  // estandar. expenseClassCode no se toca: en el flujo con orden viene de
+  // la orden, y aca no hay orden de donde sacarlo; lo elige Adsemble al
+  // completar la factura en BC.
+  if (invoice.invoice_tax_number) {
+    await bcPatch(
+      bcCompanyId,
+      `/purchaseInvoiceFiscals(${created.id})`,
+      { fiscalDocumentNo: invoice.invoice_tax_number },
+      "custom",
+    );
+  }
+
+  // 3. El PDF, por el mismo mecanismo que ya usamos en las ordenes
+  // (documentAttachments, tabla 1173) -- verifica el contenido releyendolo,
+  // asi que si no queda adjunto de verdad, esto lanza y la factura NO se
+  // marca exportada.
+  let attached = false;
+  if (invoice.file_path) {
+    const { data: fileBlob, error: downloadErr } = await db.storage.from("invoices").download(invoice.file_path as string);
+    if (downloadErr) throw new Error(`No se pudo leer el PDF de Storage: ${downloadErr.message}`);
+    const bytes = new Uint8Array(await fileBlob.arrayBuffer());
+    await bcAttachDocumentFile(
+      bcCompanyId,
+      `/purchaseInvoices(${created.id})`,
+      (invoice.filename as string) ?? "factura.pdf",
+      bytes,
+      "application/pdf",
+      "Purchase Invoice",
+    );
+    attached = true;
+  }
+
+  return { bcInvoiceId: created.id, bcInvoiceNumber: created.number, attached };
 }
 
 Deno.serve(async (req: Request) => {
@@ -112,9 +213,61 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // === Factura SIN orden de compra ===
+    //
+    // Hasta el 2026-09-04 esto era un error duro ("Sin orden de compra
+    // vinculada") y la factura quedaba trabada para siempre. El portal si
+    // permitia cargarla (opcion "Sin orden de compra" en Invoices.tsx), asi
+    // que era un camino a medio construir.
+    //
+    // Lo destapo el listado real que envio el equipo de Adsemble
+    // (2026-09-04, hoja "Proveedores emiten NCF sin ODC"): 30 proveedores
+    // que facturan sin orden de compra, y no son marginales -- son los
+    // servicios recurrentes que facturan todos los meses (Claro, EDESUR,
+    // acueducto, ayuntamiento, seguros, seguridad, limpieza, combustible).
+    // Jonatan eligio la opcion A: que el portal cree la Factura de Compra
+    // en BC para estos casos.
+    //
+    // Esto NO contradice la decision del 2026-09-02 ("el portal no crea
+    // facturas de compra, solo alimenta la seccion General de la orden"):
+    // esa decision resolvia el caso en que SI hay una orden que alimentar.
+    // Aca no hay ninguna, asi que no hay donde dejar los datos ni el PDF.
+    //
+    // Se crea la CABECERA de la factura con los datos que el portal si
+    // conoce (proveedor, fechas, Nº de factura, NCF) y se le adjunta el
+    // PDF. Las lineas NO se crean a proposito: la cuenta contable, el ITBIS
+    // y la clasificacion de gasto son decisiones contables de Adsemble, y
+    // las lineas que trae el OCR de un PDF no son confiables para eso
+    // (se ha visto leer el telefono del proveedor como un importe). Igual
+    // que en el flujo con orden, el portal deja los datos y el documento
+    // puestos; quien completa y postea en BC es Adsemble.
     if (!invoice.purchase_order_id) {
-      await markError(db, invoice.id, body.changedBy, "La factura no tiene una orden de compra vinculada");
-      return new Response(JSON.stringify({ ok: false, error: "Sin orden de compra vinculada" }), { status: 422 });
+      const result = await exportInvoiceWithoutOrder(db, invoice);
+      await db
+        .from("invoices")
+        .update({
+          status: "exported",
+          bc_invoice_id: result.bcInvoiceId,
+          bc_invoice_number: result.bcInvoiceNumber,
+          exported_at: new Date().toISOString(),
+          export_error_reason: null,
+        })
+        .eq("id", invoice.id);
+      await db.from("invoice_status_history").insert({
+        invoice_id: invoice.id,
+        status: "exported",
+        changed_by: body.changedBy,
+        reason: null,
+      });
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          withoutOrder: true,
+          bcInvoiceNumber: result.bcInvoiceNumber,
+          attached: result.attached,
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
     }
 
     const { data: order, error: orderErr } = await db
@@ -156,19 +309,6 @@ Deno.serve(async (req: Request) => {
     // medias en la orden.
     const { data: vendor, error: vendorErr } = await db.from("vendors").select("*").eq("id", order.vendor_id).single();
     if (vendorErr || !vendor) throw new Error(`Proveedor no encontrado: ${vendorErr?.message}`);
-    // Grupos de registro de proveedor que NO emiten NCF: el comprobante lo
-    // emite Adsemble, no el proveedor. Confirmado contra BC (pantalla "Grupos
-    // registro proveedor": los tres tienen "Permitir emitir NCF" marcado, con
-    // sus propias series -- ECF PROVIN, ECF GTOMEN, ECF P EX) y contra el
-    // listado que envio el equipo de Adsemble el 2026-09-04, hoja
-    // "Proveedores NO emite NCF": "Clasificaciones incluidas: PROVINFORM,
-    // GASMENOR e INT" -- 1,457 proveedores.
-    //
-    // GASMENOR faltaba (2026-09-04). Sin esto, toda factura de un proveedor
-    // de gasto menor (62 en produccion: cajas chicas, tarjetas corporativas,
-    // reposiciones de fondo) se caia al exportar con "La factura no tiene
-    // NCF", pidiendo un dato que ese proveedor por definicion no emite.
-    const NCF_EXEMPT_POSTING_GROUPS = ["PROVINFORM", "INT", "GASMENOR"];
     const ncfExempt = NCF_EXEMPT_POSTING_GROUPS.includes(vendor.vendor_posting_group);
     if (!ncfExempt && !invoice.invoice_tax_number) {
       throw new Error(`La factura no tiene NCF (invoice_tax_number) -- no se puede reflejar en la Orden de Compra sin ese dato.`);

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useTranslation } from "@/i18n";
+import { supabase } from "@/lib/supabase";
 import { useSessionStore } from "@/store/session";
 import { useDomainStore } from "@/store/domain";
 import { Card } from "@/components/ui/Card";
@@ -130,7 +131,53 @@ export function InvoicesList() {
   // sin preguntar, y la factura quedaba sin vincular sin que nadie lo
   // decidiera (plan de observaciones de usuarios, 2026-08-26).
   const requiresOrderChoice = isSupplier && openOrdersForSupplier.length > 0;
-  const canPickFile = !requiresOrderChoice || selectedOrderId !== "";
+
+  // Cuando carga alguien del equipo interno (admin/superadmin) no hay
+  // proveedor implicito como con un proveedor logueado (session.supplierId),
+  // asi que hay que elegirlo a mano. Sin esto la factura quedaba con
+  // vendor_id nulo y despues no se podia exportar a BC: no hay a nombre de
+  // quien crear la Factura de Compra. Es el caso de los 30 proveedores que
+  // facturan sin orden de compra (Claro, EDESUR, seguros, ayuntamiento...),
+  // que los carga Adsemble, no el proveedor.
+  //
+  // La busqueda va contra el servidor y no contra el store: `vendors` en el
+  // store solo trae los ya referenciados por facturas/ordenes cargadas, a
+  // proposito (son ~33 mil en produccion, ver comentario en domain.ts).
+  const [vendorQuery, setVendorQuery] = useState("");
+  const [vendorResults, setVendorResults] = useState<{ id: string; vendor_number: string; company_name: string }[]>([]);
+  const [pickedVendor, setPickedVendor] = useState<{ id: string; vendor_number: string; company_name: string } | null>(null);
+  const [searchingVendor, setSearchingVendor] = useState(false);
+
+  useEffect(() => {
+    const term = vendorQuery.trim();
+    if (term.length < 3 || pickedVendor) {
+      setVendorResults([]);
+      return;
+    }
+    let cancelled = false;
+    setSearchingVendor(true);
+    const timer = setTimeout(async () => {
+      let q = supabase
+        .from("vendors")
+        .select("id, vendor_number, company_name")
+        .or(`company_name.ilike.%${term}%,vendor_number.ilike.%${term}%`)
+        .limit(15);
+      if (scopeCompanyId) q = q.eq("company_id", scopeCompanyId);
+      const { data } = await q;
+      if (!cancelled) {
+        setVendorResults((data as typeof vendorResults) ?? []);
+        setSearchingVendor(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [vendorQuery, pickedVendor, scopeCompanyId]);
+
+  const needsVendorChoice = isAdmin && !isSupplier;
+  const canPickFile =
+    (!requiresOrderChoice || selectedOrderId !== "") && (!needsVendorChoice || pickedVendor !== null);
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0] ?? null;
@@ -143,7 +190,7 @@ export function InvoicesList() {
         await uploadInvoice({
           companyId: scopeCompanyId ?? session.companyId ?? "",
           purchaseOrderId,
-          vendorId: isSupplier ? (session.supplierId ?? null) : null,
+          vendorId: isSupplier ? (session.supplierId ?? null) : (pickedVendor?.id ?? null),
           invoiceNumber: "",
           vendorName: "",
           vendorTaxId: "",
@@ -191,6 +238,59 @@ export function InvoicesList() {
                   ))}
                   <option value={NO_ORDER}>Sin orden de compra</option>
                 </Select>
+              )}
+              {needsVendorChoice && (
+                <div className="relative sm:w-72">
+                  {pickedVendor ? (
+                    <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                      <span className="truncate">
+                        <span className="font-semibold text-slate-900">{pickedVendor.company_name}</span>{" "}
+                        <span className="text-slate-500">{pickedVendor.vendor_number}</span>
+                      </span>
+                      <button
+                        type="button"
+                        className="shrink-0 text-slate-500 underline"
+                        onClick={() => {
+                          setPickedVendor(null);
+                          setVendorQuery("");
+                        }}
+                        disabled={uploading}
+                      >
+                        Cambiar
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <input
+                        type="text"
+                        value={vendorQuery}
+                        onChange={(e) => setVendorQuery(e.target.value)}
+                        placeholder="Buscar proveedor por nombre o numero..."
+                        disabled={uploading}
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                      />
+                      {vendorQuery.trim().length >= 3 && (
+                        <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+                          {searchingVendor && <p className="px-3 py-2 text-sm text-slate-500">Buscando...</p>}
+                          {!searchingVendor && vendorResults.length === 0 && (
+                            <p className="px-3 py-2 text-sm text-slate-500">Sin resultados.</p>
+                          )}
+                          {vendorResults.map((v) => (
+                            <button
+                              key={v.id}
+                              type="button"
+                              onClick={() => setPickedVendor(v)}
+                              className="block w-full px-3 py-2 text-left text-sm hover:bg-slate-50"
+                            >
+                              <span className="font-medium text-slate-900">{v.company_name}</span>{" "}
+                              <span className="text-slate-500">{v.vendor_number}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
               )}
               <Button onClick={() => fileInputRef.current?.click()} disabled={uploading || !canPickFile}>
                 {t("uploadInvoice")}
@@ -401,7 +501,13 @@ export function InvoiceDetail() {
         : "bg-slate-100 text-slate-700";
 
   const isApprover = session.role === "admin" || session.role === "superadmin" || session.role === "approver";
-  const canConfirm = session.role === "supplier" && invoice.status === "uploaded";
+  // Confirmar los datos no es exclusivo del proveedor (2026-09-04): los 30
+  // proveedores que facturan sin orden de compra (Claro, EDESUR, seguros,
+  // ayuntamiento...) no entran al portal -- sus facturas las carga el equipo
+  // de Adsemble, y si el equipo no puede confirmarlas quedan trabadas en
+  // "Cargada" para siempre. Quien puede cargar, puede confirmar.
+  const canConfirm =
+    ["supplier", "service_uploader", "admin", "superadmin"].includes(session.role ?? "") && invoice.status === "uploaded";
   const canDecide = isApprover && invoice.status === "pending_approval";
   // Eliminar factura cargada por error (Key Players, 2026-09-01, item 2):
   // solo mientras no fue "enviada" (draft/uploaded) -- una vez en
@@ -414,10 +520,16 @@ export function InvoiceDetail() {
     session.role === "superadmin" ||
     ((session.role === "supplier" || session.role === "service_uploader") &&
       (invoice.status === "draft" || invoice.status === "uploaded"));
-  // PROVINFORM (informal) e INT (extranjero) no manejan NCF dominicano --
-  // categoria sincronizada desde BC (vendorPostingSetups), no inventada por
-  // el portal. Por defecto (vacio/desconocido) se sigue exigiendo NCF.
-  const ncfRequired = !["PROVINFORM", "INT"].includes(supplier?.vendorPostingGroup ?? "");
+  // PROVINFORM (informal), INT (extranjero) y GASMENOR (gasto menor) no
+  // emiten NCF: el comprobante lo emite Adsemble. Categoria sincronizada
+  // desde BC (vendorPostingSetups), no inventada por el portal. Por defecto
+  // (vacio/desconocido) se sigue exigiendo NCF.
+  //
+  // GASMENOR faltaba aca igual que en bc-export-invoice (2026-09-04, listado
+  // real del equipo de Adsemble: "Clasificaciones incluidas: PROVINFORM,
+  // GASMENOR e INT"). Sin esto, el proveedor de gasto menor no podia ni
+  // confirmar su factura: la pantalla le exigia un NCF que no tiene.
+  const ncfRequired = !["PROVINFORM", "INT", "GASMENOR"].includes(supplier?.vendorPostingGroup ?? "");
 
   async function handleApprove() {
     if (!session.userId) return;

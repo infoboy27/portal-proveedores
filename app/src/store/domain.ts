@@ -80,7 +80,7 @@ interface DomainStore {
   exportInvoice: (
     invoiceId: string,
     changedBy: string,
-  ) => Promise<{ orderNumber: string; attached: boolean }>;
+  ) => Promise<{ orderNumber: string; attached: boolean; withoutOrder: boolean; bcInvoiceNumber: string }>;
   confirmInvoiceForApproval: (invoiceId: string, changedBy: string) => Promise<void>;
   // Confirmacion de orden de compra (Dias 7-9): registro solo-portal, nunca
   // escribe a BC directo — ver rpc_confirm_purchase_order en schema-v4.sql.
@@ -454,7 +454,15 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     }
     if (!data?.ok) throw new Error(data?.error ?? "La exportacion a Business Central fallo");
     await get().fetchAll();
-    return { orderNumber: data.orderNumber as string, attached: !!data.attached };
+    // Una factura sin orden de compra no devuelve orderNumber: el portal le
+    // crea una Factura de Compra en BC y devuelve su numero (2026-09-04, ver
+    // bc-export-invoice). La UI muestra uno u otro segun cual venga.
+    return {
+      orderNumber: (data.orderNumber as string) ?? "",
+      attached: !!data.attached,
+      withoutOrder: !!data.withoutOrder,
+      bcInvoiceNumber: (data.bcInvoiceNumber as string) ?? "",
+    };
   },
 
   async updateInvoiceData(invoiceId, patch) {

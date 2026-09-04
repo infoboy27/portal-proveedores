@@ -9,7 +9,7 @@ import { ExportStatusBadge } from "@/components/ui/ExportStatusBadge";
 import type { Invoice } from "@/store/types";
 
 type ExportResult =
-  | { kind: "success"; invoiceNumber: string; orderNumber: string; attached: boolean }
+  | { kind: "success"; invoiceNumber: string; orderNumber: string; attached: boolean; withoutOrder: boolean; bcInvoiceNumber: string }
   | { kind: "error"; invoiceNumber: string; message: string };
 
 interface BatchResultItem {
@@ -91,8 +91,8 @@ export function Exports() {
     if (!session.userId) return;
     setExportingId(invoiceId);
     try {
-      const { orderNumber, attached } = await exportInvoice(invoiceId, session.userId);
-      setResult({ kind: "success", invoiceNumber, orderNumber, attached });
+      const { orderNumber, attached, withoutOrder, bcInvoiceNumber } = await exportInvoice(invoiceId, session.userId);
+      setResult({ kind: "success", invoiceNumber, orderNumber, attached, withoutOrder, bcInvoiceNumber });
     } catch (err) {
       setResult({ kind: "error", invoiceNumber, message: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -108,8 +108,16 @@ export function Exports() {
     for (const inv of targets) {
       const invoiceNumber = inv.invoiceNumber || inv.id.slice(0, 8);
       try {
-        const { orderNumber, attached } = await exportInvoice(inv.id, session.userId);
-        results.push({ invoiceId: inv.id, invoiceNumber, kind: "success", orderNumber, message: attached ? undefined : "sin PDF adjunto" });
+        const { orderNumber, attached, withoutOrder, bcInvoiceNumber } = await exportInvoice(inv.id, session.userId);
+        results.push({
+          invoiceId: inv.id,
+          invoiceNumber,
+          kind: "success",
+          // Sin orden de compra la fila muestra la Factura de Compra creada
+          // en BC, que es el documento donde quedaron los datos y el PDF.
+          orderNumber: withoutOrder ? `Factura de Compra ${bcInvoiceNumber}` : orderNumber,
+          message: attached ? undefined : "sin PDF adjunto",
+        });
       } catch (err) {
         results.push({ invoiceId: inv.id, invoiceNumber, kind: "error", message: err instanceof Error ? err.message : String(err) });
       }
@@ -215,8 +223,18 @@ export function Exports() {
                 </p>
                 <p className="mt-2 text-lg font-semibold text-slate-950">Factura {result.invoiceNumber}</p>
                 <p className="mt-3 text-sm text-slate-600">
-                  Orden de Compra <span className="font-semibold text-slate-900">{result.orderNumber}</span> actualizada
-                  en Business Central con la fecha, Nº factura y NCF.
+                  {result.withoutOrder ? (
+                    <>
+                      Sin orden de compra: se creo la Factura de Compra{" "}
+                      <span className="font-semibold text-slate-900">{result.bcInvoiceNumber}</span> en Business Central
+                      con el proveedor, la fecha, el Nº de factura y el NCF. Falta completar las lineas y postearla en BC.
+                    </>
+                  ) : (
+                    <>
+                      Orden de Compra <span className="font-semibold text-slate-900">{result.orderNumber}</span> actualizada
+                      en Business Central con la fecha, Nº factura y NCF.
+                    </>
+                  )}
                 </p>
                 <p className="mt-1 text-sm text-slate-600">
                   {result.attached ? "El PDF se adjunto a la orden correctamente." : "No tenia PDF para adjuntar."}
