@@ -156,7 +156,20 @@ Deno.serve(async (req: Request) => {
     // medias en la orden.
     const { data: vendor, error: vendorErr } = await db.from("vendors").select("*").eq("id", order.vendor_id).single();
     if (vendorErr || !vendor) throw new Error(`Proveedor no encontrado: ${vendorErr?.message}`);
-    const ncfExempt = vendor.vendor_posting_group === "PROVINFORM" || vendor.vendor_posting_group === "INT";
+    // Grupos de registro de proveedor que NO emiten NCF: el comprobante lo
+    // emite Adsemble, no el proveedor. Confirmado contra BC (pantalla "Grupos
+    // registro proveedor": los tres tienen "Permitir emitir NCF" marcado, con
+    // sus propias series -- ECF PROVIN, ECF GTOMEN, ECF P EX) y contra el
+    // listado que envio el equipo de Adsemble el 2026-09-04, hoja
+    // "Proveedores NO emite NCF": "Clasificaciones incluidas: PROVINFORM,
+    // GASMENOR e INT" -- 1,457 proveedores.
+    //
+    // GASMENOR faltaba (2026-09-04). Sin esto, toda factura de un proveedor
+    // de gasto menor (62 en produccion: cajas chicas, tarjetas corporativas,
+    // reposiciones de fondo) se caia al exportar con "La factura no tiene
+    // NCF", pidiendo un dato que ese proveedor por definicion no emite.
+    const NCF_EXEMPT_POSTING_GROUPS = ["PROVINFORM", "INT", "GASMENOR"];
+    const ncfExempt = NCF_EXEMPT_POSTING_GROUPS.includes(vendor.vendor_posting_group);
     if (!ncfExempt && !invoice.invoice_tax_number) {
       throw new Error(`La factura no tiene NCF (invoice_tax_number) -- no se puede reflejar en la Orden de Compra sin ese dato.`);
     }
