@@ -72,7 +72,25 @@ function AuthBootstrap({ children }: { children: React.ReactNode }) {
       // "companies" en schema-v29.sql), asi que no se le agrega la
       // opcion sintetica: elige entre sus empresas reales, igual que
       // aprobador/proveedor.
-      if (role === "superadmin") {
+      // 2026-09-07: `admin` y `approver` recuperan la opcion sintetica, pero
+      // NO significa lo mismo que para superadmin. Para ellos "Todas las
+      // empresas" quiere decir "todas LAS MIAS": companyRows ya viene
+      // acotado por RLS a sus empresas asignadas, y las consultas siguen
+      // pasando por esa misma RLS. Es decir, no revierte el item 4 de Key
+      // Players (que quito el alcance ilimitado del admin) -- sigue sin ver
+      // ni una empresa que no tenga asignada.
+      //
+      // Lo pidio el equipo al armar el piloto: una analista con las siete
+      // empresas del grupo tenia que ir cambiando de empresa una por una,
+      // con siete bandejas de aprobacion separadas en vez de una sola. Las
+      // pantallas ya estaban preparadas para esto (isGlobalApprover en
+      // Approvals.tsx y Dashboard.tsx); lo unico que faltaba era darles la
+      // opcion. El proveedor sigue sin ella a proposito: trabaja sobre sus
+      // propias facturas y el contexto de empresa ahi si tiene que ser
+      // explicito.
+      const canWorkAcrossCompanies =
+        role === "superadmin" || ((role === "admin" || role === "approver") && availableCompanies.length > 1);
+      if (canWorkAcrossCompanies) {
         availableCompanies.unshift({ companyId: "__all__", companyName: "Todas las empresas", isGlobal: true });
       }
 

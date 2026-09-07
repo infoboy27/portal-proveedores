@@ -212,7 +212,11 @@ export function Users() {
                           Resetear password
                         </Button>
                       )}
-                      {isSuperadmin && u.role === "admin" && (
+                      {/* Analista incluido desde 2026-09-07 (schema-v34.sql):
+                          las cuatro analistas del piloto de produccion tienen
+                          que cubrir las siete empresas del grupo, y antes el
+                          alcance de un analista era una sola empresa. */}
+                      {isSuperadmin && (u.role === "admin" || u.role === "approver") && (
                         <Button
                           variant="ghost"
                           onClick={() => {
@@ -601,8 +605,9 @@ function AssignCompaniesForm({
   return (
     <div className="space-y-4">
       <p className="text-sm text-slate-700">
-        Empresas que <strong>{user.email}</strong> puede administrar como Administrador. Fuera de esta lista, no va a
-        poder ver ni gestionar nada de esa empresa.
+        Empresas que <strong>{user.email}</strong> puede{" "}
+        {user.role === "approver" ? "revisar como Analista" : "administrar como Administrador"}. Fuera de esta lista, no
+        va a poder ver ni gestionar nada de esa empresa.
       </p>
       {loading ? (
         <p className="text-sm text-slate-500">Cargando...</p>

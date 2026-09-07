@@ -86,13 +86,48 @@ Deno.serve(async (req: Request) => {
   try {
     const db = admin();
 
-    if (!(await shouldRun(db, THROTTLE_KEY))) {
+    // El freno es para la corrida automatica del cron. Pedir una empresa
+    // puntual (companyId) es una accion deliberada -- tipicamente poner al
+    // dia una empresa recien activada -- y no tiene por que esperar el
+    // intervalo: sin esta excepcion, la primera empresa marcaba la corrida
+    // como hecha y las otras seis respondian "not due yet".
+    if (!body.companyId && !(await shouldRun(db, THROTTLE_KEY))) {
       return new Response(JSON.stringify({ ok: true, skipped: true, reason: "not due yet" }), {
         headers: { "Content-Type": "application/json" },
       });
     }
 
-    const companies = await getActiveCompanies(db);
+    // Una empresa por invocacion (2026-09-07, ver schema-v35.sql): con las
+    // siete empresas de produccion y 3,609 proveedores cada una, hacerlas
+    // todas juntas excedia el limite DURO de CPU del runtime y el supervisor
+    // mataba al worker ("CPU time hard limit reached"). Ese limite no se
+    // sube por configuracion.
+    //
+    // Se procesa la que lleve mas tiempo sin sincronizar; con el cron cada
+    // 15 minutos las siete quedan al dia en menos de dos horas. `companyId`
+    // en el body permite forzar una empresa puntual (util para poner al dia
+    // una recien activada sin esperar la cola).
+    const allCompanies = await getActiveCompanies(db);
+    let companies = allCompanies;
+    if (body.companyId) {
+      companies = allCompanies.filter((c) => c.id === body.companyId);
+      if (companies.length === 0) {
+        return new Response(
+          JSON.stringify({ ok: false, error: `La empresa ${body.companyId} no existe o no esta activa` }),
+          { status: 404, headers: { "Content-Type": "application/json" } },
+        );
+      }
+    } else if (allCompanies.length > 1) {
+      const { data: nextRow } = await db
+        .from("companies")
+        .select("id")
+        .is("disabled_at", null)
+        .order("vendors_synced_at", { ascending: true, nullsFirst: true })
+        .limit(1)
+        .maybeSingle();
+      const nextId = nextRow?.id as string | undefined;
+      companies = nextId ? allCompanies.filter((c) => c.id === nextId) : allCompanies.slice(0, 1);
+    }
     const siteUrl = Deno.env.get("SITE_URL") ?? undefined;
 
     let vendorsProcessed = 0;
@@ -220,7 +255,14 @@ Deno.serve(async (req: Request) => {
             }
 
             if (linkRows.length > 0) {
-              const { error: linkErr } = await db.from("user_vendor_mapping").insert(linkRows);
+              // upsert y no insert (2026-09-07): el vinculo puede existir ya
+              // porque alguien invito a ese proveedor a mano desde el portal
+              // para esa misma empresa. Con insert, esa fila repetida tiraba
+              // 23505 y REVENTABA LA CORRIDA ENTERA -- un proveedor invitado
+              // a mano dejaba sin sincronizar a los otros 3,608.
+              const { error: linkErr } = await db
+                .from("user_vendor_mapping")
+                .upsert(linkRows, { onConflict: "user_id,vendor_id", ignoreDuplicates: true });
               if (linkErr) throw linkErr;
               companyAutoLinked = linkRows.length;
             }
@@ -285,6 +327,9 @@ Deno.serve(async (req: Request) => {
       newVendorsTotal += newVendors.length;
       autoLinkedTotal += companyAutoLinked;
       inviteSkippedCap += companyInviteSkippedCap;
+      // Marca por empresa: es lo que hace rotar la cola (schema-v35.sql).
+      await db.from("companies").update({ vendors_synced_at: new Date().toISOString() }).eq("id", company.id);
+
       perCompany.push({
         company: company.name,
         vendorsProcessed: vendors.length,
