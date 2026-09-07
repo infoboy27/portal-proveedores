@@ -1,7 +1,7 @@
 // Sincroniza ordenes de compra BC -> Supabase (solo lectura del lado de BC).
 // Invocacion manual/programada — no la llama el frontend. Ver plan Fase A.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { bcGet, bcGetAll } from "../_shared/bc-client.ts";
+import { bcGetAll } from "../_shared/bc-client.ts";
 import { getActiveCompanies } from "../_shared/companies.ts";
 import { markRan, shouldRun } from "../_shared/sync-throttle.ts";
 
@@ -17,6 +17,8 @@ interface BcPurchaseOrder {
   totalAmountIncludingTax: number;
   status: string;
   paymentTermsId: string | null;
+  // Presente cuando se pide con $expand=purchaseOrderLines (2026-09-07).
+  purchaseOrderLines?: BcPurchaseOrderLine[];
 }
 
 // Key Players (2026-09-02), item 7: fecha estimada de pago = fecha de la
@@ -44,22 +46,36 @@ interface BcPurchaseOrderLine {
 }
 
 interface BcPurchaseOrderFiscal {
+  id: string;
   expenseClassCode: string | null;
 }
 
-// "Expense Class Code" (DSNCod. Clasificacion Gasto) es de solo lectura del
-// lado del portal: quien arma la orden en BC ya lo elige al crearla (ver
-// PurchOrderFiscalAPI.al). No falla la orden completa si esta llamada
-// falla (extension no publicada todavia, campo vacio en ordenes viejas,
-// etc.) -- solo queda sin ese dato, igual que antes de este cambio.
-async function fetchExpenseClassCode(bcCompanyId: string, orderBcId: string): Promise<string | null> {
+// Todos los codigos de clasificacion de gasto de una empresa, en UNA sola
+// llamada, indexados por el SystemId de la orden.
+//
+// 2026-09-07: antes esto era una llamada a BC POR CADA ORDEN
+// (fetchExpenseClassCode, abajo). Con una sola empresa activa se notaba
+// poco; al activar las 7 empresas de produccion pasaron a ser 229 ordenes
+// = 229 llamadas solo para este dato, y la sincronizacion dejo de terminar
+// dentro del tiempo permitido: el supervisor mataba al worker y despues el
+// gateway devolvia 502. Resultado: 4 dias sin sincronizar y nadie se
+// enteraba. purchaseOrderFiscals es una page sobre Purchase Header
+// filtrada a Document Type = Order, asi que un GET sin filtro devuelve
+// todas las ordenes de la empresa de una vez (verificado en produccion:
+// 144 registros de Liquid Digital Agency en una llamada).
+async function fetchExpenseClassCodes(bcCompanyId: string): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
   try {
-    const fiscal = await bcGet<BcPurchaseOrderFiscal>(bcCompanyId, `/purchaseOrderFiscals(${orderBcId})`, "custom");
-    return fiscal.expenseClassCode || null;
+    const rows = await bcGetAll<BcPurchaseOrderFiscal>(bcCompanyId, "/purchaseOrderFiscals", "custom");
+    for (const row of rows) {
+      if (row.id && row.expenseClassCode) map.set(row.id, row.expenseClassCode);
+    }
   } catch (err) {
-    console.error(`No se pudo leer Expense Class Code de la orden ${orderBcId}: ${err}`);
-    return null;
+    // Mismo criterio que antes: si la extension no esta publicada o falla,
+    // las ordenes se sincronizan igual, solo sin este dato.
+    console.error(`No se pudieron leer los Expense Class Code de la empresa ${bcCompanyId}: ${err}`);
   }
+  return map;
 }
 
 const STATUS_MAP: Record<string, string> = {
@@ -153,7 +169,16 @@ Deno.serve(async () => {
 
     for (const company of companies) {
       await syncPaymentTerms(db, company);
-      const orders = await bcGetAll<BcPurchaseOrder>(company.bcCompanyId, "/purchaseOrders");
+      // Dos lecturas en lote por empresa, en vez de dos llamadas por orden
+      // (2026-09-07, ver fetchExpenseClassCodes): las lineas vienen
+      // expandidas en la misma respuesta de las ordenes, y los codigos de
+      // gasto se traen todos juntos. Con las 7 empresas de produccion esto
+      // baja la sincronizacion de ~458 llamadas a BC a 14.
+      const orders = await bcGetAll<BcPurchaseOrder>(
+        company.bcCompanyId,
+        "/purchaseOrders?$expand=purchaseOrderLines",
+      );
+      const expenseClassCodes = await fetchExpenseClassCodes(company.bcCompanyId);
       let companyCreated = 0;
       let companyUpdated = 0;
       let companySkippedNotApproved = 0;
@@ -176,7 +201,7 @@ Deno.serve(async () => {
 
         const { data: existingOrder } = await db.from("purchase_orders").select("id").eq("bc_id", order.id).maybeSingle();
 
-        const expenseClassCode = await fetchExpenseClassCode(company.bcCompanyId, order.id);
+        const expenseClassCode = expenseClassCodes.get(order.id) ?? null;
 
         const orderRow = {
           company_id: company.id,
@@ -203,7 +228,8 @@ Deno.serve(async () => {
           companyCreated++;
         }
 
-        const lines = await bcGetAll<BcPurchaseOrderLine>(company.bcCompanyId, `/purchaseOrders(${order.id})/purchaseOrderLines`);
+        // Ya vienen en la respuesta de arriba ($expand), sin llamada extra.
+        const lines = order.purchaseOrderLines ?? [];
         const { error: delErr } = await db.from("purchase_orders_lines").delete().eq("order_id", orderId);
         if (delErr) throw delErr;
 
