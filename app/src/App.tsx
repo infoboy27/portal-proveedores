@@ -108,7 +108,28 @@ function AuthBootstrap({ children }: { children: React.ReactNode }) {
       // empresas reales tiene que confirmar explicitamente antes de
       // trabajar; con 1 sola, se autoselecciona sin friccion.
       const realCompanyCount = availableCompanies.filter((c) => !c.isGlobal).length;
-      const companyConfirmed = role === "superadmin" || realCompanyCount <= 1;
+      let companyConfirmed = role === "superadmin" || realCompanyCount <= 1;
+
+      // La eleccion sobrevive a recargas (2026-09-07). Sin esto, el gate
+      // reaparecia solo: loadProfile recalcula companyConfirmed desde cero,
+      // y se ejecuta en cada recarga completa de pagina -- por ejemplo
+      // despues de subir una factura, que hace window.location.href.
+      // Reportado por Jonatan: "de repente me pone a seleccionar la
+      // empresa... muchas veces usando la app lo hace tambien".
+      //
+      // Se guarda por usuario para que dos cuentas en el mismo navegador no
+      // se pisen, y se descarta si esa empresa ya no esta entre las suyas
+      // (le quitaron el acceso, la desactivaron, cambio de rol).
+      let restored: Company | null = null;
+      if (!companyConfirmed) {
+        try {
+          const saved = localStorage.getItem(`portal-empresa-activa:${userId}`);
+          if (saved) restored = availableCompanies.find((c) => c.companyId === saved) ?? null;
+        } catch {
+          // Modo privado o almacenamiento bloqueado: se pide elegir, nada mas.
+        }
+        if (restored) companyConfirmed = true;
+      }
 
       setSession({
         userId,
@@ -121,7 +142,9 @@ function AuthBootstrap({ children }: { children: React.ReactNode }) {
         // principal.
         companyId: profile?.company_id ?? defaultCompanyId,
         supplierId: vendorMappings.find((m) => m.companyId === activeCompany?.companyId)?.vendorId ?? primaryMapping?.vendorId ?? null,
-        activeCompany,
+        // La empresa recordada gana sobre el default calculado: si el
+        // usuario ya eligio, se respeta su eleccion.
+        activeCompany: restored ?? activeCompany,
         availableCompanies,
         vendorMappings,
         companyConfirmed,
@@ -129,18 +152,39 @@ function AuthBootstrap({ children }: { children: React.ReactNode }) {
       await fetchAll();
     }
 
+    // Quien esta cargado ahora mismo. Ver el comentario del listener abajo.
+    let loadedUserId: string | null = null;
+
     supabase.auth.getSession().then(({ data }) => {
       if (data.session?.user) {
+        // Marcarlo aca tambien evita la carga duplicada: el listener de
+        // abajo dispara igual con la sesion inicial.
+        loadedUserId = data.session.user.id;
         loadProfile(data.session.user.id).finally(() => setReady(true));
       } else {
         setReady(true);
       }
     });
 
+    // Solo se recarga el perfil cuando cambia QUIEN esta logueado
+    // (2026-09-07). onAuthStateChange no dispara unicamente al entrar y
+    // salir: tambien en cada refresco de token y al volver el foco a la
+    // pestaña. Cada una de esas veces se volvia a ejecutar loadProfile, que
+    // recalcula companyConfirmed desde cero, y el usuario terminaba de
+    // vuelta en "Seleccione una empresa" en medio del trabajo -- justo el
+    // sintoma reportado: "si dejo de usar el mouse un momento, de inmediato
+    // me manda a esa pantalla".
+    //
+    // Un refresco de token no cambia nada del perfil, asi que recargarlo no
+    // aportaba nada; lo unico que hacia era tirar el estado de la sesion.
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        loadProfile(session.user.id);
+      const userId = session?.user?.id ?? null;
+      if (userId) {
+        if (userId === loadedUserId) return;
+        loadedUserId = userId;
+        loadProfile(userId);
       } else {
+        loadedUserId = null;
         clearSession();
       }
     });

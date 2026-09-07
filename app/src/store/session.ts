@@ -37,6 +37,16 @@ export const useSessionStore = create<SessionStore>((set) => ({
   setActiveCompany: (company) =>
     set((state) => {
       const mapping = state.session.vendorMappings.find((m) => m.companyId === company.companyId);
+      // Se recuerda por usuario para que la eleccion sobreviva a una recarga
+      // (2026-09-07, ver el comentario en App.tsx). Si el navegador no deja
+      // guardar, no pasa nada: solo vuelve a preguntar.
+      try {
+        if (state.session.userId) {
+          localStorage.setItem(`portal-empresa-activa:${state.session.userId}`, company.companyId);
+        }
+      } catch {
+        // almacenamiento bloqueado
+      }
       return {
         session: {
           ...state.session,
