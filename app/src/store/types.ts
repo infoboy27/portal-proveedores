@@ -12,7 +12,10 @@ export type InvoiceStatus =
   | "exported"
   | "processed"
   | "rejected"
-  | "export_error";
+  | "export_error"
+  // Salio a BC y despues se corrigio con una nota de credito (2026-09-08).
+  // Distinto de "rejected", que significa que nunca salio.
+  | "annulled";
 
 export type PurchaseOrderStatus = "draft" | "open" | "in_review" | "partially_invoiced" | "closed";
 
@@ -77,6 +80,8 @@ export interface Invoice {
   pdfUrl?: string | null;
   validInvoiceTaxNumber: boolean | null;
   rejectionReason: string | null;
+  annulmentReason: string | null;
+  creditNoteNumber: string | null;
   taxId?: string;
   erpId: string | null;
   bcInvoiceId: string | null;

@@ -71,7 +71,7 @@ export function InvoicesList() {
   const invoicedTotalByOrder = useMemo(() => {
     const totals = new Map<string, number>();
     for (const inv of invoices) {
-      if (inv.status === "rejected" || !inv.purchaseOrderId) continue;
+      if (inv.status === "rejected" || inv.status === "annulled" || !inv.purchaseOrderId) continue;
       totals.set(inv.purchaseOrderId, (totals.get(inv.purchaseOrderId) ?? 0) + inv.total);
     }
     return totals;
@@ -455,7 +455,7 @@ export function InvoiceDetail() {
   const otherInvoicesOnOrderTotal = useMemo(() => {
     if (!order) return 0;
     return invoices
-      .filter((inv) => inv.id !== invoiceId && inv.purchaseOrderId === order.id && inv.status !== "rejected")
+      .filter((inv) => inv.id !== invoiceId && inv.purchaseOrderId === order.id && inv.status !== "rejected" && inv.status !== "annulled")
       .reduce((sum, inv) => sum + inv.total, 0);
   }, [invoices, order, invoiceId]);
 
@@ -509,6 +509,30 @@ export function InvoiceDetail() {
   const canConfirm =
     ["supplier", "service_uploader", "admin", "superadmin"].includes(session.role ?? "") && invoice.status === "uploaded";
   const canDecide = isApprover && invoice.status === "pending_approval";
+  // Anular solo tiene sentido sobre lo que efectivamente salio a BC. El
+  // proveedor no puede: es una decision contable de Adsemble (2026-09-08).
+  const canAnnul = isApprover && (invoice.status === "exported" || invoice.status === "processed");
+  const [annulling, setAnnulling] = useState(false);
+  const [annulReason, setAnnulReason] = useState("");
+  const [annulCreditNote, setAnnulCreditNote] = useState("");
+  const [annulError, setAnnulError] = useState<string | null>(null);
+  const annulInvoice = useDomainStore((s) => s.annulInvoice);
+
+  async function handleAnnul() {
+    if (!session.userId) return;
+    setAnnulError(null);
+    setBusy(true);
+    try {
+      await annulInvoice(invoiceId, session.userId, annulReason.trim(), annulCreditNote.trim());
+      setAnnulling(false);
+      setAnnulReason("");
+      setAnnulCreditNote("");
+    } catch (err) {
+      setAnnulError(err instanceof Error ? err.message : "No fue posible anular la factura.");
+    } finally {
+      setBusy(false);
+    }
+  }
   // Eliminar factura cargada por error (Key Players, 2026-09-01, item 2):
   // solo mientras no fue "enviada" (draft/uploaded) -- una vez en
   // pending_approval en adelante ya no es libre, coincide con canConfirm.
@@ -731,6 +755,19 @@ export function InvoiceDetail() {
         {invoice.exportErrorReason && invoice.status === "export_error" && (
           <p className="mt-3 text-sm text-rose-700">{invoice.exportErrorReason}</p>
         )}
+        {/* El motivo lo ve tambien el proveedor: es como se entera de que
+            tiene que reemitir (2026-09-08). */}
+        {invoice.status === "annulled" && (
+          <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
+            <p className="text-sm font-semibold text-amber-900">
+              Factura anulada. Se corrigió con una nota de crédito en Business Central.
+            </p>
+            {invoice.annulmentReason && <p className="mt-1 text-sm text-amber-900">{invoice.annulmentReason}</p>}
+            {invoice.creditNoteNumber && (
+              <p className="mt-1 text-sm text-amber-800">Nota de crédito: {invoice.creditNoteNumber}</p>
+            )}
+          </div>
+        )}
       </Card>
 
       {/* "exported" es el estado terminal desde 2026-09-02 (ver
@@ -808,7 +845,7 @@ export function InvoiceDetail() {
         </Card>
       )}
 
-      {(canConfirm || canDecide) && (
+      {(canConfirm || canDecide || canAnnul) && (
         <Card className="p-5">
           <h2 className="text-lg font-semibold text-slate-950">{t("actions")}</h2>
           {canConfirm && (
@@ -899,8 +936,57 @@ export function InvoiceDetail() {
                 </Button>
               </>
             )}
+            {/* Anular: la factura YA salio a BC y alla se corrigio con una
+                nota de credito (2026-09-08). No se reutiliza "Rechazar"
+                porque significa lo contrario -- que nunca salio. */}
+            {canAnnul && (
+              <Button variant="danger" onClick={() => setAnnulling(true)} disabled={busy}>
+                Anular factura
+              </Button>
+            )}
           </div>
         </Card>
+      )}
+
+      {annulling && (
+        <Modal open title="Anular factura" onClose={() => setAnnulling(false)}>
+          <div className="space-y-4">
+            <p className="text-sm text-slate-700">
+              Esta factura ya se exportó a Business Central. Anularla la marca como corregida y libera el saldo de la
+              orden para que el proveedor pueda cargar la factura correcta. <strong>No se toca Business Central</strong>:
+              la nota de crédito se emite allá.
+            </p>
+            <div>
+              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Motivo (obligatorio)
+              </label>
+              <Input
+                value={annulReason}
+                onChange={(e) => setAnnulReason(e.target.value)}
+                placeholder="Por qué se anula. Lo va a ver el proveedor."
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Nº de nota de crédito (opcional)
+              </label>
+              <Input
+                value={annulCreditNote}
+                onChange={(e) => setAnnulCreditNote(e.target.value)}
+                placeholder="Para poder ubicarla en Business Central"
+              />
+            </div>
+            {annulError && <p className="text-sm text-rose-600">{annulError}</p>}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="ghost" onClick={() => setAnnulling(false)} disabled={busy}>
+                Cancelar
+              </Button>
+              <Button variant="danger" onClick={handleAnnul} disabled={busy || !annulReason.trim()}>
+                {busy ? "Anulando..." : "Anular factura"}
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       <Card id="lines" className="overflow-hidden p-0">

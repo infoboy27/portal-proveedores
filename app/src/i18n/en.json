@@ -315,6 +315,7 @@
   "uploaded": "Uploaded",
   "pendingApproval": "In approval",
   "rejected": "Rejected",
+  "annulled": "Annulled",
   "approved": "Approved",
   "readyForExport": "Ready for export",
   "exported": "Exported",

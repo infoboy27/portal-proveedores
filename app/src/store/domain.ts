@@ -77,6 +77,7 @@ interface DomainStore {
   fetchAll: () => Promise<void>;
   approveInvoice: (invoiceId: string, changedBy: string) => Promise<void>;
   rejectInvoice: (invoiceId: string, changedBy: string, reason: string) => Promise<void>;
+  annulInvoice: (invoiceId: string, changedBy: string, reason: string, creditNote: string) => Promise<void>;
   exportInvoice: (
     invoiceId: string,
     changedBy: string,
@@ -424,6 +425,20 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
     await get().fetchAll();
   },
 
+  // Anular una factura que YA salio a BC y se corrigio alla con una nota de
+  // credito (2026-09-08). No es lo mismo que rechazar: rechazada = nunca
+  // salio, anulada = salio y se corrigio. Ver schema-v38.sql.
+  async annulInvoice(invoiceId, changedBy, reason, creditNote) {
+    const { error } = await supabase.rpc("rpc_annul_invoice", {
+      p_invoice_id: invoiceId,
+      p_changed_by: changedBy,
+      p_reason: reason,
+      p_credit_note: creditNote || null,
+    });
+    if (error) throw error;
+    await get().fetchAll();
+  },
+
   // Exportacion real a Business Central (Fase A). Rediseñado 2026-09-02
   // (pedido de Jonatan): ya NO crea ninguna Factura de Compra en BC -- solo
   // completa la seccion General de la Orden de Compra vinculada (fecha,
@@ -486,6 +501,10 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
         .eq("vendor_id", current.supplierId)
         .eq("invoice_number", invoiceNumber)
         .neq("id", invoiceId)
+        // Una factura anulada no bloquea reemitir con el mismo numero
+        // (2026-09-08): se corrigio con nota de credito y el proveedor
+        // puede reusar la numeracion.
+        .not("status", "in", "(rejected,annulled)")
         .maybeSingle();
       if (dupError) throw dupError;
       if (duplicate) {
@@ -507,6 +526,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
         .eq("vendor_id", current.supplierId)
         .eq("invoice_tax_number", invoiceTaxNumber)
         .neq("id", invoiceId)
+        .not("status", "in", "(rejected,annulled)")
         .maybeSingle();
       if (dupNcfError) throw dupNcfError;
       if (duplicateNcf) {
@@ -527,7 +547,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
       if (order) {
         const othersTotal = get()
           .invoices.filter(
-            (inv) => inv.id !== invoiceId && inv.purchaseOrderId === current.purchaseOrderId && inv.status !== "rejected",
+            (inv) => inv.id !== invoiceId && inv.purchaseOrderId === current.purchaseOrderId && inv.status !== "rejected" && inv.status !== "annulled",
           )
           .reduce((sum, inv) => sum + inv.total, 0);
         const combinedTotal = othersTotal + patch.totalAmount;
@@ -657,7 +677,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
       const order = get().purchaseOrders.find((po) => po.id === input.purchaseOrderId);
       if (order && order.amount > 0) {
         const invoicedTotal = get()
-          .invoices.filter((inv) => inv.purchaseOrderId === input.purchaseOrderId && inv.status !== "rejected")
+          .invoices.filter((inv) => inv.purchaseOrderId === input.purchaseOrderId && inv.status !== "rejected" && inv.status !== "annulled")
           .reduce((sum, inv) => sum + inv.total, 0);
         if (invoicedTotal >= order.amount) {
           throw new Error("Esta orden de compra ya tiene facturado el total de su monto. Elimine o espere a que se resuelva una factura existente.");

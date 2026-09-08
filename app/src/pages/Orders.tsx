@@ -354,7 +354,7 @@ export function OrderDetail() {
   // si se ofrece el boton de carga: admite una factura nueva mientras
   // quede saldo sin facturar contra order.amount.
   const invoicedTotal = useMemo(
-    () => linkedInvoices.filter((inv) => inv.status !== "rejected").reduce((sum, inv) => sum + inv.total, 0),
+    () => linkedInvoices.filter((inv) => inv.status !== "rejected" && inv.status !== "annulled").reduce((sum, inv) => sum + inv.total, 0),
     [linkedInvoices],
   );
   const remainingBalance = order ? order.amount - invoicedTotal : 0;

@@ -336,6 +336,7 @@
   "uploaded": "Cargada",
   "pendingApproval": "En aprobacion",
   "rejected": "Rechazada",
+  "annulled": "Anulada",
   "approved": "Aprobada",
   "readyForExport": "Lista para exportacion",
   "exported": "Exportada",
