@@ -119,7 +119,7 @@ export function Users() {
     }
   }
 
-  async function handleCreate(input: { email: string; role: UserRole; companyId: string; vendorId: string; username: string }) {
+  async function handleCreate(input: { email: string; role: UserRole; companyId: string; companyIds: string[]; vendorId: string; username: string }) {
     setCreateError(null);
     setSaving(true);
     try {
@@ -127,6 +127,7 @@ export function Users() {
         email: input.email,
         role: input.role,
         companyId: input.companyId || null,
+        companyIds: input.companyIds.length > 0 ? input.companyIds : undefined,
         vendorId: input.vendorId || null,
         username: input.username || undefined,
       });
@@ -402,7 +403,7 @@ function CreateUserForm({
   error: string | null;
   callerIsSuperadmin: boolean;
   onCancel: () => void;
-  onCreate: (input: { email: string; role: UserRole; companyId: string; vendorId: string; username: string }) => void;
+  onCreate: (input: { email: string; role: UserRole; companyId: string; companyIds: string[]; vendorId: string; username: string }) => void;
 }) {
   // Key Players (2026-09-03), item 4: un admin (no superadmin) solo
   // puede invitar analistas -- ofrecer los demas roles en el dropdown es
@@ -417,15 +418,27 @@ function CreateUserForm({
   const [vendorId, setVendorId] = useState("");
   const companies = useDomainStore((s) => s.companies);
   const [companyId, setCompanyId] = useState("");
+  const [companyIds, setCompanyIds] = useState<string[]>([]);
 
   const needsVendor = role === "supplier" || role === "service_uploader";
+  const isInternalMultiCompany = role === "approver" || role === "admin";
+  const allSelected = companies.length > 0 && companyIds.length === companies.length;
+
+  // Al elegir un rol interno se marcan todas por defecto: es lo que se pide
+  // en la practica, y desmarcar es mas rapido que marcar siete.
+  useEffect(() => {
+    if (isInternalMultiCompany && companyIds.length === 0) {
+      setCompanyIds(companies.map((c) => c.id));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role, companies.length]);
 
   return (
     <form
       className="space-y-4"
       onSubmit={(e) => {
         e.preventDefault();
-        onCreate({ email, role, companyId, vendorId, username });
+        onCreate({ email, role, companyId, companyIds, vendorId, username });
       }}
     >
       <div>
@@ -459,23 +472,62 @@ function CreateUserForm({
           </Select>
         </div>
       )}
-      <div>
-        <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Empresa</label>
-        <Select value={companyId} onChange={(e) => setCompanyId(e.target.value)} required={!callerIsSuperadmin}>
-          {callerIsSuperadmin && <option value="">Sin empresa (global)</option>}
-          {companies.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </Select>
-      </div>
+      {/* Analista y Administrador cubren varias empresas (schema-v34/v36),
+          asi que eligen con casillas y no con un desplegable de una sola.
+          Antes habia que crear el usuario con una y despues entrar a
+          "Empresas" a asignarle el resto -- dos pasos para lo que en la
+          practica siempre es "todas". El proveedor sigue con desplegable:
+          su empresa va atada al proveedor de BC que se le asigna. */}
+      {isInternalMultiCompany ? (
+        <div>
+          <div className="mb-1 flex items-center justify-between">
+            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Empresas</label>
+            <button
+              type="button"
+              className="text-xs font-medium text-slate-600 underline"
+              onClick={() => setCompanyIds(allSelected ? [] : companies.map((c) => c.id))}
+            >
+              {allSelected ? "Ninguna" : "Todas"}
+            </button>
+          </div>
+          <div className="max-h-52 space-y-1 overflow-y-auto rounded-xl border border-slate-200 p-3">
+            {companies.map((c) => (
+              <label key={c.id} className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300"
+                  checked={companyIds.includes(c.id)}
+                  onChange={(e) =>
+                    setCompanyIds((prev) => (e.target.checked ? [...prev, c.id] : prev.filter((x) => x !== c.id)))
+                  }
+                />
+                {c.name}
+              </label>
+            ))}
+          </div>
+          <p className="mt-1 text-xs text-slate-500">
+            Solo va a ver y trabajar sobre las empresas marcadas. Se puede cambiar despues desde "Empresas".
+          </p>
+        </div>
+      ) : (
+        <div>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Empresa</label>
+          <Select value={companyId} onChange={(e) => setCompanyId(e.target.value)} required={!callerIsSuperadmin}>
+            {callerIsSuperadmin && <option value="">Sin empresa (global)</option>}
+            {companies.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+      )}
       {error && <p className="text-sm text-rose-600">{error}</p>}
       <div className="flex justify-end gap-2 pt-2">
         <Button type="button" variant="ghost" onClick={onCancel} disabled={saving}>
           Cancelar
         </Button>
-        <Button type="submit" disabled={saving || (needsVendor && !vendorId) || (!callerIsSuperadmin && !companyId)}>
+        <Button type="submit" disabled={saving || (needsVendor && !vendorId) || (isInternalMultiCompany && companyIds.length === 0) || (!callerIsSuperadmin && !isInternalMultiCompany && !companyId)}>
           {saving ? "Invitando..." : "Invitar"}
         </Button>
       </div>

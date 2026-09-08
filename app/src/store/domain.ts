@@ -173,6 +173,9 @@ interface DomainStore {
     email: string;
     role: PortalUser["role"];
     companyId: string | null;
+    // Analista/Administrador cubren varias empresas (2026-09-08): se envian
+    // todas y el backend crea sus asignaciones en el mismo paso.
+    companyIds?: string[];
     vendorId: string | null;
     username?: string;
   }) => Promise<void>;
@@ -760,6 +763,7 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
         email: input.email,
         role: input.role,
         companyId: input.companyId,
+        companyIds: input.companyIds,
         vendorId: input.vendorId,
         username: input.username,
       },

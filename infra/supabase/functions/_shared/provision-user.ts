@@ -15,6 +15,9 @@ export interface ProvisionUserInput {
   email: string;
   role: PortalRole;
   companyId?: string | null;
+  // Empresas sobre las que trabaja un rol interno (admin/approver). La
+  // primera queda ademas como companyId "principal" del perfil.
+  companyIds?: string[] | null;
   vendorId?: string | null;
   username?: string;
   siteUrl?: string;
@@ -52,6 +55,24 @@ export async function provisionInvitedUser(db: SupabaseClient<any>, input: Provi
   if (profileErr) {
     await db.auth.admin.deleteUser(invited.user.id);
     return { ok: false, error: `No se pudo crear el perfil: ${profileErr.message}` };
+  }
+
+  // Alcance sobre varias empresas para los roles internos (2026-09-08).
+  // Antes se creaba el usuario con UNA empresa y despues habia que entrar a
+  // "Empresas" a asignarle el resto -- dos pasos para lo que en la practica
+  // siempre es "todas". Analista incluido desde schema-v34/v36: la tabla
+  // admin_company_assignments ya sirve para los dos roles internos.
+  if (input.companyIds && input.companyIds.length > 0 && (input.role === "admin" || input.role === "approver")) {
+    const rows = input.companyIds.map((companyId) => ({ user_id: invited.user!.id, company_id: companyId }));
+    const { error: assignErr } = await db
+      .from("admin_company_assignments")
+      .upsert(rows, { onConflict: "user_id,company_id", ignoreDuplicates: true });
+    if (assignErr) {
+      // No se deshace la invitacion por esto: el usuario existe y puede
+      // entrar; su alcance se corrige desde "Empresas" en la pantalla de
+      // Usuarios.
+      console.error(`admin_company_assignments fallo para ${invited.user.id}: ${assignErr.message}`);
+    }
   }
 
   if (input.vendorId) {

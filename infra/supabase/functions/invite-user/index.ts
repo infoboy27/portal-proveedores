@@ -16,6 +16,9 @@ interface InviteRequest {
   email: string;
   role: PortalRole;
   companyId?: string | null;
+  // Roles internos (admin/approver) pueden abarcar varias empresas
+  // (2026-09-08). Si viene, la primera hace de companyId principal.
+  companyIds?: string[] | null;
   vendorId?: string | null;
   username?: string;
 }
@@ -87,17 +90,25 @@ Deno.serve(async (req: Request) => {
         headers: { "Content-Type": "application/json" },
       });
     }
-    if (!body.companyId) {
-      return new Response(JSON.stringify({ ok: false, error: "companyId es obligatorio" }), { status: 400 });
+    // Se validan TODAS las empresas pedidas, no solo la principal
+    // (2026-09-08, al agregar la seleccion multiple): si solo se revisara
+    // companyId, un administrador podria colar en companyIds empresas que
+    // no le corresponden y darle a un analista mas alcance del que el mismo
+    // tiene.
+    const requested = Array.from(
+      new Set([...(body.companyIds ?? []), ...(body.companyId ? [body.companyId] : [])]),
+    );
+    if (requested.length === 0) {
+      return new Response(JSON.stringify({ ok: false, error: "Hay que indicar al menos una empresa" }), { status: 400 });
     }
-    const { data: assignment } = await db
+    const { data: assignments } = await db
       .from("admin_company_assignments")
       .select("company_id")
       .eq("user_id", callerAuth.user.id)
-      .eq("company_id", body.companyId)
-      .maybeSingle();
-    if (!assignment) {
-      return new Response(JSON.stringify({ ok: false, error: "No tenes autorizacion sobre esa empresa" }), {
+      .in("company_id", requested);
+    const allowed = new Set((assignments ?? []).map((a) => a.company_id as string));
+    if (requested.some((c) => !allowed.has(c))) {
+      return new Response(JSON.stringify({ ok: false, error: "No tenes autorizacion sobre alguna de esas empresas" }), {
         status: 403,
         headers: { "Content-Type": "application/json" },
       });
@@ -107,7 +118,10 @@ Deno.serve(async (req: Request) => {
   const result = await provisionInvitedUser(db, {
     email: body.email,
     role: body.role,
-    companyId: body.companyId,
+    // Con varias empresas, la primera es la "principal" del perfil y todas
+    // van a admin_company_assignments (2026-09-08).
+    companyId: body.companyId ?? body.companyIds?.[0] ?? null,
+    companyIds: body.companyIds ?? null,
     vendorId: body.vendorId,
     username: body.username,
     siteUrl: Deno.env.get("SITE_URL") ?? undefined,
