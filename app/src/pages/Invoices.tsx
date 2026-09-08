@@ -48,10 +48,22 @@ export function InvoicesList() {
   const isAdmin = session.role === "admin" || session.role === "superadmin";
   const scopeCompanyId = session.activeCompany?.isGlobal ? null : session.activeCompany?.companyId ?? session.companyId;
   const isSupplier = session.role === "supplier";
-  const canUpload = session.role === "admin" || session.role === "superadmin" || isSupplier;
+  const isApprover = session.role === "approver";
+  // Quien trabaja "desde adentro" sobre varias empresas: mismo alcance de
+  // pantalla para admin, superadmin y analista.
+  const isInternalStaff = isAdmin || isApprover;
+
+  // El analista tambien registra facturas (2026-09-08, pedido del equipo):
+  // las de los proveedores internos fijos -- Claro, EDESUR, el acueducto,
+  // los seguros -- las carga Adsemble, no el proveedor, y querian hacerlo
+  // desde el usuario que ya usan a diario en vez de un login generico
+  // compartido. La base ya lo permitia (policy "scoped insert" de invoices
+  // incluye approver sin restriccion, y la de storage va por empresa); lo
+  // unico que lo bloqueaba eran estas condiciones de pantalla.
+  const canUpload = isInternalStaff || isSupplier;
   // Multiempresa (Fase 6, 2026-08-29): igual que en Ordenes/Pagos/Aprobaciones,
   // la columna solo aparece con "Todas las empresas" seleccionado.
-  const showCompanyColumn = isAdmin && !scopeCompanyId;
+  const showCompanyColumn = isInternalStaff && !scopeCompanyId;
   const companiesById = useMemo(() => new Map(companies.map((c) => [c.id, c])), [companies]);
 
   // Ordenes del proveedor donde tiene sentido cargar una factura -- "las que
@@ -89,11 +101,15 @@ export function InvoicesList() {
   const scoped = useMemo(
     () =>
       invoices.filter((inv) => {
-        if (isAdmin) return scopeCompanyId ? inv.companyId === scopeCompanyId : true;
+        // El analista se filtra por la empresa SELECCIONADA, igual que el
+        // admin (2026-09-08). Antes caia en el ultimo caso y se filtraba por
+        // la empresa de su perfil: con las siete empresas asignadas y "Todas
+        // las empresas" elegido, seguia viendo solo las facturas de una.
+        if (isInternalStaff) return scopeCompanyId ? inv.companyId === scopeCompanyId : true;
         if (isSupplier) return !!session.supplierId && inv.supplierId === session.supplierId;
         return inv.companyId === session.companyId;
       }),
-    [invoices, isAdmin, scopeCompanyId, isSupplier, session.supplierId, session.companyId],
+    [invoices, isInternalStaff, scopeCompanyId, isSupplier, session.supplierId, session.companyId],
   );
 
   const ordersById = useMemo(() => new Map(purchaseOrders.map((po) => [po.id, po])), [purchaseOrders]);
@@ -175,7 +191,7 @@ export function InvoicesList() {
     };
   }, [vendorQuery, pickedVendor, scopeCompanyId]);
 
-  const needsVendorChoice = isAdmin && !isSupplier;
+  const needsVendorChoice = isInternalStaff && !isSupplier;
   const canPickFile =
     (!requiresOrderChoice || selectedOrderId !== "") && (!needsVendorChoice || pickedVendor !== null);
 
@@ -507,7 +523,7 @@ export function InvoiceDetail() {
   // de Adsemble, y si el equipo no puede confirmarlas quedan trabadas en
   // "Cargada" para siempre. Quien puede cargar, puede confirmar.
   const canConfirm =
-    ["supplier", "service_uploader", "admin", "superadmin"].includes(session.role ?? "") && invoice.status === "uploaded";
+    ["supplier", "service_uploader", "admin", "superadmin", "approver"].includes(session.role ?? "") && invoice.status === "uploaded";
   const canDecide = isApprover && invoice.status === "pending_approval";
   // Anular solo tiene sentido sobre lo que efectivamente salio a BC. El
   // proveedor no puede: es una decision contable de Adsemble (2026-09-08).
