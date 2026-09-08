@@ -131,6 +131,32 @@ function AuthBootstrap({ children }: { children: React.ReactNode }) {
         if (restored) companyConfirmed = true;
       }
 
+      // El proveedor de la empresa que REALMENTE queda activa.
+      //
+      // Bug real y grave (2026-09-08): esto se calculaba sobre
+      // `activeCompany` -- la empresa por defecto -- mientras la sesion se
+      // quedaba con `restored ?? activeCompany`. Cuando habia empresa
+      // recordada (o sea, siempre, desde que se agrego esa memoria el
+      // 2026-09-07), la sesion terminaba con la empresa X y el proveedor de
+      // la empresa Y. Consecuencias vistas en produccion:
+      //   - Las facturas se guardaban con company_id de X y vendor_id de Y.
+      //   - El listado del proveedor filtra por vendor_id, asi que con una
+      //     empresa seleccionada le mostraba las facturas de la otra.
+      //   - Y por eso el equipo volvia a subir la misma factura: no la veia
+      //     donde correspondia.
+      // 9 facturas de produccion quedaron mal, todas creadas despues de ese
+      // despliegue.
+      //
+      // Ademas se quita el fallback silencioso a primaryMapping cuando hay
+      // una empresa concreta activa: si no hay vinculo para esa empresa, el
+      // valor correcto es null (y la carga se bloquea con un mensaje), no el
+      // proveedor de otra empresa.
+      const finalActiveCompany = restored ?? activeCompany;
+      const supplierIdForActiveCompany =
+        finalActiveCompany && !finalActiveCompany.isGlobal
+          ? (vendorMappings.find((m) => m.companyId === finalActiveCompany.companyId)?.vendorId ?? null)
+          : (primaryMapping?.vendorId ?? null);
+
       setSession({
         userId,
         role,
@@ -141,10 +167,10 @@ function AuthBootstrap({ children }: { children: React.ReactNode }) {
         // proveedores). El mapping queda como respaldo, no como fuente
         // principal.
         companyId: profile?.company_id ?? defaultCompanyId,
-        supplierId: vendorMappings.find((m) => m.companyId === activeCompany?.companyId)?.vendorId ?? primaryMapping?.vendorId ?? null,
+        supplierId: supplierIdForActiveCompany,
         // La empresa recordada gana sobre el default calculado: si el
         // usuario ya eligio, se respeta su eleccion.
-        activeCompany: restored ?? activeCompany,
+        activeCompany: finalActiveCompany,
         availableCompanies,
         vendorMappings,
         companyConfirmed,
