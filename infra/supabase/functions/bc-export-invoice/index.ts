@@ -31,7 +31,7 @@
 // sigue disponible en el historial de git (commit "pedido Key Players --
 // 1 OC = 1 Factura...", 2026-09-01) para reactivarla.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { bcPatch, bcPost, bcAttachDocumentFile } from "../_shared/bc-client.ts";
+import { bcGet, bcPatch, bcPost, bcAttachDocumentFile } from "../_shared/bc-client.ts";
 
 interface ExportRequest {
   invoiceId: string;
@@ -80,12 +80,63 @@ async function markError(db: ReturnType<typeof admin>, invoiceId: string, change
 // pidiendo un dato que ese proveedor por definicion no emite.
 const NCF_EXEMPT_POSTING_GROUPS = ["PROVINFORM", "INT", "GASMENOR"];
 
+// Cuantas facturas anteriores del proveedor se miran para deducir la cuenta.
+const ACCOUNT_HISTORY_SIZE = 4;
+
+// La cuenta contable que ese proveedor viene usando en esa empresa, SOLO si
+// su historial es unanime (2026-09-08).
+//
+// Contexto: el equipo reporto que al registrar una factura sin orden de
+// compra la cuenta contable venia vacia y habia que buscarla a mano. El
+// portal no puede deducirla del PDF -- el lector automatico no es confiable
+// para eso -- pero si puede mirar que cuenta uso ese mismo proveedor la vez
+// anterior, que para los proveedores de servicios recurrentes (Claro,
+// EDESUR, seguridad, telecomunicaciones) es practicamente siempre la misma.
+// Comprobado en produccion contra el historial real: EDESUR 6104 en sus 4
+// ultimas facturas, Claro 6103 en las 4, Guardianes 6107 en las 4.
+//
+// Regla deliberadamente conservadora: si las facturas anteriores NO
+// coinciden todas en la misma cuenta, no se pone ninguna. ADSEMBLE SRL, por
+// ejemplo, alterna 6020 y 6101 -- ahi adivinar seria peor que dejarlo vacio,
+// porque una cuenta equivocada en el mayor no salta a la vista. Mismo
+// criterio que ya usamos con el OCR: ante la duda, no inventar.
+async function fetchConsistentAccount(bcCompanyId: string, vendorNumber: string): Promise<string | null> {
+  try {
+    const invoices = await bcGet<{ value: { id: string }[] }>(
+      bcCompanyId,
+      `/purchaseInvoices?$filter=vendorNumber eq '${vendorNumber}'&$select=id&$top=${ACCOUNT_HISTORY_SIZE}&$orderby=invoiceDate desc`,
+    );
+    const accounts = new Set<string>();
+    for (const inv of invoices.value ?? []) {
+      const lines = await bcGet<{ value: { lineType: string; lineObjectNumber: string }[] }>(
+        bcCompanyId,
+        `/purchaseInvoices(${inv.id})/purchaseInvoiceLines?$select=lineType,lineObjectNumber`,
+      );
+      for (const line of lines.value ?? []) {
+        if (line.lineType === "Account" && line.lineObjectNumber) accounts.add(line.lineObjectNumber);
+      }
+    }
+    if (accounts.size === 1) return Array.from(accounts)[0];
+    if (accounts.size > 1) {
+      console.error(
+        `Proveedor ${vendorNumber}: ${accounts.size} cuentas distintas en sus ultimas facturas (${Array.from(accounts).join(", ")}) -- no se pone ninguna`,
+      );
+    }
+    return null;
+  } catch (err) {
+    // Nunca hace fallar la exportacion: sin cuenta, la factura queda igual
+    // que hasta ahora y alguien la completa a mano.
+    console.error(`No se pudo deducir la cuenta contable de ${vendorNumber}: ${err}`);
+    return null;
+  }
+}
+
 // Crea la Factura de Compra en BC para una factura del portal que no tiene
 // orden de compra. Ver el comentario grande en el punto de llamada.
 async function exportInvoiceWithoutOrder(
   db: ReturnType<typeof admin>,
   invoice: Record<string, unknown>,
-): Promise<{ bcInvoiceId: string; bcInvoiceNumber: string; attached: boolean }> {
+): Promise<{ bcInvoiceId: string; bcInvoiceNumber: string; attached: boolean; accountNumber: string | null }> {
   if (!invoice.vendor_id) {
     throw new Error("La factura no tiene orden de compra NI proveedor asignado -- no hay a nombre de quien crearla en Business Central.");
   }
@@ -131,6 +182,46 @@ async function exportInvoiceWithoutOrder(
     vendorInvoiceNumber: invoice.invoice_number ?? invoice.invoice_tax_number,
   });
 
+  // 1.5. Una linea con la cuenta contable, si el historial del proveedor es
+  // concluyente (2026-09-08, ver fetchConsistentAccount).
+  //
+  // UNA sola linea, no las que traiga la factura anterior: Claro y Columbus
+  // reparten cada factura en 3 lineas por centro de costo, y ese reparto es
+  // una decision de Adsemble que el portal no tiene como deducir. Se deja
+  // la linea puesta con la cuenta y ellos la dividen si hace falta, que es
+  // mas rapido que armarla desde cero.
+  //
+  // El IMPORTE se deja a proposito en cero: el portal solo conoce el total
+  // CON ITBIS incluido (es lo unico que el proveedor confirma; subtotal y
+  // ITBIS vienen siempre en 0). Poner ese total en la linea haria que BC le
+  // sumara el impuesto encima y el documento quedaria por mas de lo que el
+  // proveedor factura -- un error que ademas no salta a la vista. Se puede
+  // resolver el dia que el proveedor confirme tambien subtotal e ITBIS.
+  //
+  // Los grupos contables (negocio/producto/IVA) no se tocan: BC los completa
+  // solo a partir de la ficha de la cuenta.
+  let accountNumber: string | null = null;
+  if (vendor.vendor_number) {
+    accountNumber = await fetchConsistentAccount(bcCompanyId, vendor.vendor_number as string);
+    if (accountNumber) {
+      const description = invoice.invoice_number
+        ? `Factura ${invoice.invoice_number}`
+        : `NCF ${invoice.invoice_tax_number ?? ""}`.trim();
+      try {
+        await bcPost(bcCompanyId, `/purchaseInvoices(${created.id})/purchaseInvoiceLines`, {
+          lineType: "Account",
+          lineObjectNumber: accountNumber,
+          description,
+        });
+      } catch (err) {
+        // La cabecera y el PDF ya estan; que falle la linea no justifica
+        // dejar la factura sin exportar.
+        console.error(`No se pudo crear la linea contable en ${created.number}: ${err}`);
+        accountNumber = null;
+      }
+    }
+  }
+
   // 2. NCF, via el custom API propio (page 58004) -- no esta en la API
   // estandar. expenseClassCode no se toca: en el flujo con orden viene de
   // la orden, y aca no hay orden de donde sacarlo; lo elige Adsemble al
@@ -164,7 +255,7 @@ async function exportInvoiceWithoutOrder(
     attached = true;
   }
 
-  return { bcInvoiceId: created.id, bcInvoiceNumber: created.number, attached };
+  return { bcInvoiceId: created.id, bcInvoiceNumber: created.number, attached, accountNumber };
 }
 
 Deno.serve(async (req: Request) => {
@@ -265,6 +356,7 @@ Deno.serve(async (req: Request) => {
           withoutOrder: true,
           bcInvoiceNumber: result.bcInvoiceNumber,
           attached: result.attached,
+          accountNumber: result.accountNumber,
         }),
         { headers: { "Content-Type": "application/json" } },
       );
