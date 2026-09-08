@@ -82,6 +82,7 @@ export interface Invoice {
   rejectionReason: string | null;
   annulmentReason: string | null;
   creditNoteNumber: string | null;
+  exportedBy: string | null;
   taxId?: string;
   erpId: string | null;
   bcInvoiceId: string | null;

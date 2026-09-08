@@ -341,6 +341,10 @@ Deno.serve(async (req: Request) => {
           bc_invoice_id: result.bcInvoiceId,
           bc_invoice_number: result.bcInvoiceNumber,
           exported_at: new Date().toISOString(),
+          // Queda en la factura, no solo en el historial: la pantalla de
+          // Monitoreo de exportaciones lo muestra y esa lista no trae el
+          // historial completo (2026-09-08).
+          exported_by: body.changedBy,
           export_error_reason: null,
         })
         .eq("id", invoice.id);
@@ -470,6 +474,7 @@ Deno.serve(async (req: Request) => {
         bc_invoice_id: null,
         bc_invoice_number: null,
         exported_at: new Date().toISOString(),
+        exported_by: body.changedBy,
         export_error_reason: null,
       })
       .eq("id", invoice.id);

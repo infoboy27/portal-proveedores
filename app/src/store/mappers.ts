@@ -39,6 +39,7 @@ export function mapInvoice(row: Record<string, unknown>): Invoice {
     rejectionReason: (row.rejection_reason as string) ?? null,
     annulmentReason: (row.annulment_reason as string) ?? null,
     creditNoteNumber: (row.credit_note_number as string) ?? null,
+    exportedBy: (row.exported_by as string) ?? null,
     taxId: (row.vendor_tax_id as string) ?? undefined,
     erpId: (row.erp_id as string) ?? null,
     bcInvoiceId: (row.bc_invoice_id as string) ?? null,

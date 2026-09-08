@@ -71,6 +71,13 @@ export function Exports() {
   const [batchResults, setBatchResults] = useState<BatchResultItem[] | null>(null);
 
   const exportable = useMemo(() => invoices.filter(canExport), [invoices]);
+
+  const users = useDomainStore((s) => s.users);
+  const usersById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
+  const exportedByName = (userId: string) => {
+    const u = usersById.get(userId);
+    return u?.username || u?.email || null;
+  };
   const allSelected = exportable.length > 0 && exportable.every((inv) => selectedIds.has(inv.id));
   const someSelected = exportable.some((inv) => selectedIds.has(inv.id));
 
@@ -193,6 +200,15 @@ export function Exports() {
                     {t("updated") ?? "Actualizado"} {formatUpdated(inv.updatedAt)} - {t("erp") ?? "ERP"}{" "}
                     {inv.erpId ?? t("pending")}
                   </p>
+                  {/* Quien exporto (2026-09-08, pedido del equipo): el dato
+                      se guarda en la factura al exportar. Si el usuario ya
+                      no existe o no se puede leer su perfil, no se muestra
+                      nada en vez de un identificador sin sentido. */}
+                  {inv.exportedBy && exportedByName(inv.exportedBy) && (
+                    <p className="text-sm text-slate-500">
+                      Exportada por <span className="font-medium text-slate-700">{exportedByName(inv.exportedBy)}</span>
+                    </p>
+                  )}
                   {inv.status === "export_error" && inv.rejectionReason ? (
                     <p className="text-sm text-rose-700">{inv.rejectionReason}</p>
                   ) : null}
