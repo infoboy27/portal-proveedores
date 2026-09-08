@@ -77,7 +77,7 @@ interface DomainStore {
   fetchAll: () => Promise<void>;
   approveInvoice: (invoiceId: string, changedBy: string) => Promise<void>;
   rejectInvoice: (invoiceId: string, changedBy: string, reason: string) => Promise<void>;
-  annulInvoice: (invoiceId: string, changedBy: string, reason: string, creditNote: string) => Promise<void>;
+  annulInvoice: (invoiceId: string, changedBy: string, reason: string, creditNote: string, orderConsumed: boolean) => Promise<void>;
   exportInvoice: (
     invoiceId: string,
     changedBy: string,
@@ -428,12 +428,13 @@ export const useDomainStore = create<DomainStore>((set, get) => ({
   // Anular una factura que YA salio a BC y se corrigio alla con una nota de
   // credito (2026-09-08). No es lo mismo que rechazar: rechazada = nunca
   // salio, anulada = salio y se corrigio. Ver schema-v38.sql.
-  async annulInvoice(invoiceId, changedBy, reason, creditNote) {
+  async annulInvoice(invoiceId, changedBy, reason, creditNote, orderConsumed) {
     const { error } = await supabase.rpc("rpc_annul_invoice", {
       p_invoice_id: invoiceId,
       p_changed_by: changedBy,
       p_reason: reason,
       p_credit_note: creditNote || null,
+      p_order_consumed: orderConsumed,
     });
     if (error) throw error;
     await get().fetchAll();

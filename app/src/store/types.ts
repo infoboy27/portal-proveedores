@@ -120,6 +120,9 @@ export interface PurchaseOrder {
   companyId: string;
   vendorId: string;
   orderNumber: string;
+  // La orden ya fue consumida en BC: las facturas que se exporten contra
+  // ella se crean como Factura de Compra (schema-v40.sql, 2026-09-08).
+  bcConsumedAt: string | null;
   description: string;
   orderDate: string | null;
   amount: number;

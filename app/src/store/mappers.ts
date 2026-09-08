@@ -75,6 +75,7 @@ export function mapPurchaseOrder(row: Record<string, unknown>): PurchaseOrder {
     companyId: row.company_id as string,
     vendorId: row.vendor_id as string,
     orderNumber: (row.order_number as string) ?? "",
+    bcConsumedAt: (row.bc_consumed_at as string) ?? null,
     description: (row.description as string) ?? "",
     orderDate: (row.order_date as string) ?? null,
     amount: Number(row.amount ?? 0),

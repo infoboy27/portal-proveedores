@@ -72,6 +72,8 @@ export function Exports() {
 
   const exportable = useMemo(() => invoices.filter(canExport), [invoices]);
 
+  const purchaseOrders = useDomainStore((s) => s.purchaseOrders);
+  const ordersById = useMemo(() => new Map(purchaseOrders.map((po) => [po.id, po])), [purchaseOrders]);
   const users = useDomainStore((s) => s.users);
   const usersById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
   const exportedByName = (userId: string) => {
@@ -204,6 +206,16 @@ export function Exports() {
                       se guarda en la factura al exportar. Si el usuario ya
                       no existe o no se puede leer su perfil, no se muestra
                       nada en vez de un identificador sin sentido. */}
+                  {/* Aviso antes de exportar (2026-09-08): si la orden ya
+                      fue consumida en BC, esta factura NO va a actualizar la
+                      orden -- se crea como Factura de Compra. Mejor decirlo
+                      antes que sorprender despues. */}
+                  {canExport(inv) && ordersById.get(inv.purchaseOrderId ?? "")?.bcConsumedAt && (
+                    <p className="text-sm text-amber-800">
+                      La orden ya fue consumida en Business Central: se creará como{" "}
+                      <strong>Factura de Compra</strong> con las líneas de la orden.
+                    </p>
+                  )}
                   {inv.exportedBy && exportedByName(inv.exportedBy) && (
                     <p className="text-sm text-slate-500">
                       Exportada por <span className="font-medium text-slate-700">{exportedByName(inv.exportedBy)}</span>

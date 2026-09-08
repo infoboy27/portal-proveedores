@@ -131,6 +131,98 @@ async function fetchConsistentAccount(bcCompanyId: string, vendorNumber: string)
   }
 }
 
+// Crea la Factura de Compra en BC para una factura que SI tiene orden, pero
+// cuya orden ya fue consumida alla (2026-09-08, ver schema-v40.sql).
+//
+// Business Central no libera la orden de compra cuando se anula una factura
+// con nota de credito: si la factura llego a registrarse, la orden queda
+// consumida. La factura corregida ya no puede entrar contra la orden, tiene
+// que entrar como Factura de Compra.
+//
+// A diferencia del caso "sin orden de compra", aca SI se arman las lineas, y
+// con dato real: se copian las de la propia orden, que bc-sync-orders ya
+// trae de BC con su cuenta contable (941 de 941 lineas la tienen en
+// produccion). Es lo mismo que hace "Obtener lineas de pedido" en BC, solo
+// que automatico. No se inventa nada ni se usa el OCR.
+//
+// El equipo ajusta el importe en BC si la factura corregida difiere de la
+// orden -- que suele ser justo el motivo de la correccion.
+async function exportInvoiceFromConsumedOrder(
+  db: ReturnType<typeof admin>,
+  invoice: Record<string, unknown>,
+  order: Record<string, unknown>,
+  bcCompanyId: string,
+  vendor: Record<string, unknown>,
+): Promise<{ bcInvoiceId: string; bcInvoiceNumber: string; attached: boolean; lines: number }> {
+  if (!vendor.vendor_number) {
+    throw new Error("El proveedor no tiene numero de Business Central (vendor_number) -- correr bc-sync-vendors primero.");
+  }
+  if (!invoice.invoice_date) {
+    throw new Error("La factura no tiene fecha -- es obligatoria para crear el documento en Business Central.");
+  }
+
+  const created = await bcPost<{ id: string; number: string }>(bcCompanyId, "/purchaseInvoices", {
+    vendorNumber: vendor.vendor_number,
+    invoiceDate: invoice.invoice_date,
+    postingDate: invoice.invoice_date,
+    vendorInvoiceNumber: invoice.invoice_number ?? invoice.invoice_tax_number,
+  });
+
+  // Lineas copiadas de la orden. Se omite la linea que no tenga cuenta o
+  // tipo (no se puede crear en BC), pero si NINGUNA se pudo copiar se avisa:
+  // una factura sin lineas y sin explicacion es peor que un error claro.
+  const { data: orderLines } = await db
+    .from("purchase_orders_lines")
+    .select("*")
+    .eq("order_id", order.id as string)
+    .order("sequence", { ascending: true });
+
+  let copied = 0;
+  for (const line of orderLines ?? []) {
+    if (!line.bc_line_type || !line.bc_line_object_number) continue;
+    await bcPost(bcCompanyId, `/purchaseInvoices(${created.id})/purchaseInvoiceLines`, {
+      lineType: line.bc_line_type,
+      lineObjectNumber: line.bc_line_object_number,
+      description: line.description ?? `Orden ${order.order_number}`,
+      quantity: line.quantity ?? 1,
+      unitCost: line.bc_unit_cost ?? line.price ?? 0,
+    });
+    copied += 1;
+  }
+  if ((orderLines ?? []).length > 0 && copied === 0) {
+    throw new Error(
+      `La orden ${order.order_number} tiene ${orderLines?.length} linea(s) pero ninguna con cuenta contable valida en BC -- la factura ${created.number} quedo creada sin lineas, hay que completarla o eliminarla alla.`,
+    );
+  }
+
+  // NCF + clasificacion de gasto. El expense class code viene de la orden,
+  // que es donde lo eligio quien la armo en BC.
+  const fiscalPatch: Record<string, string> = {};
+  if (invoice.invoice_tax_number) fiscalPatch.fiscalDocumentNo = invoice.invoice_tax_number as string;
+  if (order.bc_expense_class_code) fiscalPatch.expenseClassCode = order.bc_expense_class_code as string;
+  if (Object.keys(fiscalPatch).length > 0) {
+    await bcPatch(bcCompanyId, `/purchaseInvoiceFiscals(${created.id})`, fiscalPatch, "custom");
+  }
+
+  let attached = false;
+  if (invoice.file_path) {
+    const { data: fileBlob, error: downloadErr } = await db.storage.from("invoices").download(invoice.file_path as string);
+    if (downloadErr) throw new Error(`No se pudo leer el PDF de Storage: ${downloadErr.message}`);
+    const bytes = new Uint8Array(await fileBlob.arrayBuffer());
+    await bcAttachDocumentFile(
+      bcCompanyId,
+      `/purchaseInvoices(${created.id})`,
+      (invoice.filename as string) ?? "factura.pdf",
+      bytes,
+      "application/pdf",
+      "Purchase Invoice",
+    );
+    attached = true;
+  }
+
+  return { bcInvoiceId: created.id, bcInvoiceNumber: created.number, attached, lines: copied };
+}
+
 // Crea la Factura de Compra en BC para una factura del portal que no tiene
 // orden de compra. Ver el comentario grande en el punto de llamada.
 async function exportInvoiceWithoutOrder(
@@ -408,6 +500,43 @@ Deno.serve(async (req: Request) => {
     const ncfExempt = NCF_EXEMPT_POSTING_GROUPS.includes(vendor.vendor_posting_group);
     if (!ncfExempt && !invoice.invoice_tax_number) {
       throw new Error(`La factura no tiene NCF (invoice_tax_number) -- no se puede reflejar en la Orden de Compra sin ese dato.`);
+    }
+
+    // Orden ya consumida en BC (2026-09-08): se anulo una factura contra
+    // ella con nota de credito, y BC no la libera. Actualizar su seccion
+    // General no serviria de nada -- nadie va a poder volver a facturar
+    // desde esa orden. La factura corregida entra como Factura de Compra,
+    // con las lineas copiadas de la propia orden.
+    if (order.bc_consumed_at) {
+      const result = await exportInvoiceFromConsumedOrder(db, invoice, order, bcCompanyId, vendor);
+      await db
+        .from("invoices")
+        .update({
+          status: "exported",
+          bc_invoice_id: result.bcInvoiceId,
+          bc_invoice_number: result.bcInvoiceNumber,
+          exported_at: new Date().toISOString(),
+          exported_by: body.changedBy,
+          export_error_reason: null,
+        })
+        .eq("id", invoice.id);
+      await db.from("invoice_status_history").insert({
+        invoice_id: invoice.id,
+        status: "exported",
+        changed_by: body.changedBy,
+        reason: `Orden ${order.order_number} ya consumida en BC -- creada como Factura de Compra ${result.bcInvoiceNumber}`,
+      });
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          fromConsumedOrder: true,
+          orderNumber: order.order_number,
+          bcInvoiceNumber: result.bcInvoiceNumber,
+          attached: result.attached,
+          lines: result.lines,
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
     }
 
     // 1. "Fecha emision documento" -- campo ESTANDAR de la API v2.0 de

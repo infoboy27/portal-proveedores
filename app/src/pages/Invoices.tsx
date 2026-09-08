@@ -515,6 +515,7 @@ export function InvoiceDetail() {
   const [annulling, setAnnulling] = useState(false);
   const [annulReason, setAnnulReason] = useState("");
   const [annulCreditNote, setAnnulCreditNote] = useState("");
+  const [annulOrderConsumed, setAnnulOrderConsumed] = useState(true);
   const [annulError, setAnnulError] = useState<string | null>(null);
   const annulInvoice = useDomainStore((s) => s.annulInvoice);
 
@@ -523,7 +524,7 @@ export function InvoiceDetail() {
     setAnnulError(null);
     setBusy(true);
     try {
-      await annulInvoice(invoiceId, session.userId, annulReason.trim(), annulCreditNote.trim());
+      await annulInvoice(invoiceId, session.userId, annulReason.trim(), annulCreditNote.trim(), annulOrderConsumed);
       setAnnulling(false);
       setAnnulReason("");
       setAnnulCreditNote("");
@@ -976,6 +977,30 @@ export function InvoiceDetail() {
                 placeholder="Para poder ubicarla en Business Central"
               />
             </div>
+            {/* BC no libera la orden al anular (2026-09-08). Si la factura
+                llego a registrarse alla, la orden quedo consumida y la
+                corregida tiene que entrar como Factura de Compra. El portal
+                no puede saberlo -- solo sabe que exporto -- asi que se
+                pregunta. Marcado por defecto porque emitir nota de credito
+                implica que se habia registrado. */}
+            {invoice.purchaseOrderId && (
+              <label className="flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300"
+                  checked={annulOrderConsumed}
+                  onChange={(e) => setAnnulOrderConsumed(e.target.checked)}
+                />
+                <span>
+                  La factura ya estaba registrada en Business Central, así que la orden quedó consumida allá.
+                  <span className="mt-1 block text-xs text-slate-500">
+                    Si se marca, la factura corregida se creará como <strong>Factura de Compra</strong> con las líneas de
+                    esta orden, en lugar de actualizar la orden. Desmárcalo solo si la factura nunca llegó a registrarse
+                    en BC.
+                  </span>
+                </span>
+              </label>
+            )}
             {annulError && <p className="text-sm text-rose-600">{annulError}</p>}
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="ghost" onClick={() => setAnnulling(false)} disabled={busy}>
