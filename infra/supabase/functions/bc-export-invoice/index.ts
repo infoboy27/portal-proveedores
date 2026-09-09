@@ -294,7 +294,18 @@ async function exportInvoiceWithoutOrder(
   // solo a partir de la ficha de la cuenta.
   let accountNumber: string | null = null;
   if (vendor.vendor_number) {
-    accountNumber = await fetchConsistentAccount(bcCompanyId, vendor.vendor_number as string);
+    // Cuenta fija configurada para este proveedor interno, si la hay
+    // (2026-09-08, schema-v42.sql). Gana sobre la deduccion por historial:
+    // es una decision explicita del equipo, no una inferencia. Resuelve los
+    // casos donde el historial no es concluyente -- EDESUR alterna entre
+    // 5000 y 6104, asi que sin esto el portal no pone ninguna.
+    const { data: internal } = await db
+      .from("internal_vendors")
+      .select("default_account")
+      .eq("vendor_number", vendor.vendor_number as string)
+      .maybeSingle();
+    accountNumber = (internal?.default_account as string) || null;
+    if (!accountNumber) accountNumber = await fetchConsistentAccount(bcCompanyId, vendor.vendor_number as string);
     if (accountNumber) {
       const description = invoice.invoice_number
         ? `Factura ${invoice.invoice_number}`

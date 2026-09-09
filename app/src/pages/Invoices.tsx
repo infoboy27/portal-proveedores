@@ -159,6 +159,45 @@ export function InvoicesList() {
   // La busqueda va contra el servidor y no contra el store: `vendors` en el
   // store solo trae los ya referenciados por facturas/ordenes cargadas, a
   // proposito (son ~33 mil en produccion, ver comentario en domain.ts).
+  // Proveedores internos fijos (2026-09-08, schema-v42.sql): los que factura
+  // Adsemble todos los meses. Se ofrecen en un desplegable corto para no
+  // tener que buscarlos entre 3,609 cada vez; el buscador libre sigue
+  // estando para todo lo demas.
+  //
+  // La lista guarda NUMEROS de proveedor, no filas: hay que resolver la fila
+  // que corresponde a la empresa activa, porque cada agencia tiene la suya.
+  const [internalVendors, setInternalVendors] = useState<{ vendor_number: string; display_name: string }[]>([]);
+  useEffect(() => {
+    if (!needsVendorChoice) return;
+    let cancelled = false;
+    supabase
+      .from("internal_vendors")
+      .select("vendor_number, display_name")
+      .order("display_name")
+      .then(({ data }) => {
+        if (!cancelled) setInternalVendors((data as typeof internalVendors) ?? []);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isInternalStaff, isSupplier]);
+
+  async function pickInternalVendor(vendorNumber: string) {
+    if (!vendorNumber) return;
+    let q = supabase.from("vendors").select("id, vendor_number, company_name").eq("vendor_number", vendorNumber).limit(1);
+    if (scopeCompanyId) q = q.eq("company_id", scopeCompanyId);
+    const { data } = await q;
+    const row = data?.[0];
+    if (row) {
+      setPickedVendor(row as { id: string; vendor_number: string; company_name: string });
+      setUploadError(null);
+    } else {
+      setUploadError(
+        `${vendorNumber} no está registrado en la empresa seleccionada. Elegí la empresa correcta antes de cargar.`,
+      );
+    }
+  }
+
   const [vendorQuery, setVendorQuery] = useState("");
   const [vendorResults, setVendorResults] = useState<{ id: string; vendor_number: string; company_name: string }[]>([]);
   const [pickedVendor, setPickedVendor] = useState<{ id: string; vendor_number: string; company_name: string } | null>(null);
@@ -277,11 +316,26 @@ export function InvoicesList() {
                     </div>
                   ) : (
                     <>
+                      {internalVendors.length > 0 && (
+                        <Select
+                          value=""
+                          onChange={(e) => void pickInternalVendor(e.target.value)}
+                          disabled={uploading}
+                          className="mb-2"
+                        >
+                          <option value="">Proveedores internos fijos...</option>
+                          {internalVendors.map((v) => (
+                            <option key={v.vendor_number} value={v.vendor_number}>
+                              {v.display_name}
+                            </option>
+                          ))}
+                        </Select>
+                      )}
                       <input
                         type="text"
                         value={vendorQuery}
                         onChange={(e) => setVendorQuery(e.target.value)}
-                        placeholder="Buscar proveedor por nombre o numero..."
+                        placeholder="O buscar cualquier otro proveedor..."
                         disabled={uploading}
                         className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
                       />
