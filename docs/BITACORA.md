@@ -3795,17 +3795,23 @@ auditoría perdidos.
 - Corregí GASMENOR en tres lugares en días distintos porque no busqué
   todas las apariciones la primera vez.
 
-## 2026-09-08 (continuación) — Mindertown Estates y Juan Fabián, visibles solo para las analistas
+## 2026-09-08 / 09 — Mindertown Estates y Juan Fabián, para analistas y administradoras
 
-Pedido de Jonatan: agregar esas dos empresas al portal, **solo visibles
-para las analistas**. Ambas ya existían en `companies` pero desactivadas.
+Pedido de Jonatan: agregar esas dos empresas al portal. El 8/9 pidió que
+fueran solo para las analistas; el 9/9 las extendió también a las
+administradoras. Ambas ya existían en `companies` pero desactivadas.
 
 Hecho:
 
 1. `disabled_at = null` en las dos, para que las procese la sincronización.
-2. Asignaciones en `admin_company_assignments` **solo para el rol
-   approver** — las administradoras (Carolina, Rut) se quedaron en 7 a
-   propósito. Analistas: 7 → 9.
+2. Asignaciones en `admin_company_assignments`. Primero **solo para el rol
+   approver** (analistas 7 → 9), con las administradoras en 7 a propósito.
+   Al día siguiente Jonatan pidió extenderlas también a ellas, así que
+   Carolina y Rut quedaron igualmente en 9. Se aprovechó para verificar
+   que los vínculos de proveedor en esas dos empresas seguían en **0**
+   tras la sincronización nocturna — como se esperaba y como se anotó
+   abajo: el auto-vínculo solo dispara con proveedores recién creados, no
+   vuelve a recrear lo borrado.
 3. Sincronización de proveedores forzada para ambas (`companyId` en el
    body, que saltea el freno): JUAN FABIAN 3,599 proveedores y 1 orden;
    Mindertown Estates 3,618 y 2 órdenes.
@@ -3833,10 +3839,14 @@ dispara con proveedores *recién creados*, no vuelve a recrear lo borrado.
 
 ### Verificado
 
-Simulando cada rol contra las policies reales: analista 9 empresas con
-las dos nuevas incluidas; administradora 7, sin ellas; proveedor 7, sin
-ellas. Y en el navegador, con la sesión real de Verónica Tejeda, el
-selector muestra las nueve.
+Simulando cada rol contra las policies reales, el 8/9: analista 9
+empresas con las dos nuevas incluidas; administradora 7, sin ellas;
+proveedor 7, sin ellas. En el navegador, con la sesión real de Verónica
+Tejeda, el selector mostró las nueve.
+
+El 9/9, tras extenderlas a las administradoras: Carolina Pérez ve las
+nueve en su selector (verificado con su sesión real). **El proveedor
+sigue en 7** — que era el punto de todo esto.
 
 El superadmin las ve por diseño (la RLS lo exime), y eso no se puede ni
 se debe acotar.
