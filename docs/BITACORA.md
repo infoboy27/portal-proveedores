@@ -3672,3 +3672,125 @@ ser el final del camino. El mecanismo estaba roto de verdad (falla
 hasta en la interfaz nativa de BC), pero había una segunda puerta
 documentada en el propio `$metadata` del tenant. Antes de escalar a un
 tercero, agotar el catálogo de lo que la plataforma ya ofrece.
+
+## 2026-09-07 / 08 — Piloto de producción: 8 usuarios reales, alcance multiempresa, y la cadena de bugs que eso destapó
+
+Dos días de trabajo con el equipo usando el portal de verdad por primera
+vez. Casi todo lo que sigue salió de que producción pasó de **1 empresa
+activa a 7**: cosas que funcionaban con una se rompieron con siete.
+
+### Auditoría de producción (2026-09-07)
+
+Pedida por Jonatan antes de dar accesos. Lo sano: contenedores, disco
+(53%/1%), memoria, certificados, puertos (solo 80/443/22 expuestos), y
+**cero deriva de esquema** contra sandbox (136 columnas, 17 funciones
+idénticas). Los respaldos **se restauraron de verdad** en una base
+descartable: 0 errores y datos idénticos — con el detalle de que hay que
+restaurar como `supabase_admin`, con `postgres` da 180 errores de permisos.
+
+Y el permiso de **escritura** del custom API de BC quedó verificado en
+Production, que era el único punto nunca ejercitado: se probó con un PATCH
+del mismo valor que el campo ya tenía, sin modificar dato alguno.
+
+Dos hallazgos graves:
+
+- **Las sincronizaciones llevaban 4 días muertas.** Dos causas encadenadas:
+  el cron redirigía su salida a `/data/adsemble/portal/logs/`, que no
+  existía (si la redirección falla, el comando no se ejecuta), y una vez
+  corriendo, `bc-sync-orders` hacía **dos llamadas a BC por cada orden**
+  (clasificación de gasto + líneas) = ~458 llamadas con 229 órdenes.
+  Reescrito a dos lecturas en lote por empresa (`$expand=purchaseOrderLines`
+  + `purchaseOrderFiscals` completo): de ~458 a 14 llamadas, de morir por
+  timeout a 3.1 s. Las órdenes en producción pasaron de 5 a 189.
+- **Auto-registro abierto**: cualquiera con la clave pública podía crear
+  cuenta. Cerrado (`DISABLE_SIGNUP=true`). Impacto acotado — sin perfil no
+  se ve nada — pero superficie innecesaria.
+
+`bc-sync-vendors` también se reescribió a **una empresa por invocación**
+(schema-v35): con 3,609 proveedores × 7 excedía el límite DURO de CPU del
+runtime, que no se sube por configuración. Y su auto-vínculo por RNC hacía
+`insert` en vez de `upsert`: un solo duplicado reventaba la corrida entera.
+
+### Alcance multiempresa del analista — en tres mitades
+
+Pedido: las 4 analistas cubren las 7 empresas. Costó tres migraciones
+porque el alcance está resuelto en tres capas distintas, y arreglar una
+sin las otras no se nota:
+
+- **schema-v34**: `portal_company_ids()` suma `admin_company_assignments`.
+- **schema-v36**: las **9 policies de datos** no usaban esa función para el
+  analista sino `portal_company_id()` (SINGULAR). Síntoma: veía 7 órdenes
+  de 189, todas de una empresa.
+- **schema-v37**: las **RPC** hacen su propia autorización y seguían igual.
+  Síntoma: Leidy veía las facturas pero no podía aprobar ni rechazar.
+  Lección anotada: buscar `portal_company_id()` solo en `pg_policies` deja
+  fuera las funciones; hay que mirar `pg_proc.prosrc`.
+- **schema-v41**: y todavía faltaba `rpc_confirm_invoice_for_approval`,
+  encontrada al habilitar al analista para registrar facturas.
+
+### El bug que yo introduje, y lo que costó
+
+`54616d1` (recordar la empresa elegida, para que el portal no expulsara al
+selector) calculaba `supplierId` sobre la empresa por defecto pero guardaba
+en la sesión `restored ?? activeCompany`. La sesión quedaba con la empresa
+X y el proveedor de la empresa Y.
+
+Consecuencias reales en producción: 9 facturas guardadas con `company_id`
+de X y `vendor_id` de Y; el proveedor veía las facturas de otra empresa
+(el listado filtra por vendor); y de ahí las **duplicadas** que reportó
+facturación — no veían su factura donde correspondía y la volvían a subir.
+El chequeo de duplicados no las atajaba porque compara por `vendor_id`, y
+el mismo proveedor real tiene una fila por empresa.
+
+Evidencia: el despliegue fue 21:52 UTC y la primera factura mal grabada es
+de las 21:54. Corregido en `1e3ac01`, quitando además el fallback
+silencioso a `primaryMapping` cuando hay empresa concreta activa.
+
+**Limpieza, decidida con Jonatan**: no borrar. Las 6 sin documento en BC se
+rechazaron con motivo explícito; VFR-000524 se dejó intacta (carga el
+rastro de la nota de crédito CNCR-001785); VFR-000523 se anuló y queda
+pendiente borrar su borrador vacío CF-012048 en BC. Cero eventos de
+auditoría perdidos.
+
+### Funcionalidad nueva
+
+- **Anular** una factura ya exportada (schema-v38), distinta de Rechazada:
+  rechazada = nunca salió, anulada = salió y se corrigió con nota de
+  crédito. Motivo obligatorio, Nº de nota opcional, libera el saldo.
+- **La orden queda consumida** (schema-v40): dato que aportó el equipo — BC
+  **no** libera la orden al anular. Si la factura llegó a registrarse allá,
+  la corregida entra como **Factura de Compra** con las líneas copiadas de
+  la orden (941/941 tienen cuenta contable). Caveat documentado: el
+  documento queda con el total de la ORDEN, hay que ajustar antes de postear.
+- **Cuenta contable automática** en facturas sin orden: se deduce del
+  historial del proveedor **solo si es unánime** (EDESUR 6104, Claro 6103…);
+  si alterna, no se pone ninguna — una cuenta equivocada en el mayor no
+  salta a la vista.
+- **Proveedores internos fijos** (schema-v42): los 8 que factura Adsemble,
+  en un desplegable corto, administrables por el admin, con cuenta fija
+  opcional que resuelve el caso de EDESUR. Claves por NÚMERO de proveedor
+  para que apliquen a las 7 empresas y sobrevivan al sync.
+- **Quién exportó** cada factura, y de paso los nombres en el Historial de
+  auditoría: la RLS de `user_profiles` solo dejaba al analista ver su
+  propio perfil, así que veía `invoice - 7d997bdf` en vez del nombre.
+
+### Decisiones tomadas
+
+- Los textos de la interfaz pasan a **español neutro (usted)**: Jonatan es
+  dominicano y se me había ido el registro argentino.
+- La **separación de funciones queda pendiente a propósito**: hoy la misma
+  analista puede cargar, confirmar y aprobar la misma factura. Se planteó,
+  Jonatan decidió dejarlo así por ahora. El rol "Carga de facturas
+  (interno)" existe si algún día se quiere separar.
+
+### Errores míos, para no repetirlos
+
+- Corrí una prueba de escritura contra producción **sin transacción
+  revertida**: aprobó una factura real y dejó 6 registros de auditoría
+  falsos. Detectado y revertido en minutos, pero el historial —que es el
+  valor del portal— estuvo mal un rato.
+- La auditoría no revisó el **almacenamiento**: el bucket `invoices` no
+  existía en producción, y era el primer paso del circuito que íbamos a
+  probar. Agregado a la lista de verificación.
+- Corregí GASMENOR en tres lugares en días distintos porque no busqué
+  todas las apariciones la primera vez.
