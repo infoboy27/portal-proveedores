@@ -3794,3 +3794,49 @@ auditoría perdidos.
   probar. Agregado a la lista de verificación.
 - Corregí GASMENOR en tres lugares en días distintos porque no busqué
   todas las apariciones la primera vez.
+
+## 2026-09-08 (continuación) — Mindertown Estates y Juan Fabián, visibles solo para las analistas
+
+Pedido de Jonatan: agregar esas dos empresas al portal, **solo visibles
+para las analistas**. Ambas ya existían en `companies` pero desactivadas.
+
+Hecho:
+
+1. `disabled_at = null` en las dos, para que las procese la sincronización.
+2. Asignaciones en `admin_company_assignments` **solo para el rol
+   approver** — las administradoras (Carolina, Rut) se quedaron en 7 a
+   propósito. Analistas: 7 → 9.
+3. Sincronización de proveedores forzada para ambas (`companyId` en el
+   body, que saltea el freno): JUAN FABIAN 3,599 proveedores y 1 orden;
+   Mindertown Estates 3,618 y 2 órdenes.
+
+### El efecto secundario que hubo que interceptar
+
+`bc-sync-vendors` tiene **auto-vínculo por RNC** (Fase 3, 2026-08-29):
+cuando aparece un proveedor nuevo en una empresa y comparte RNC con uno
+que ya tiene cuenta de portal, le agrega esa empresa a la MISMA cuenta.
+Es la mitad "una cuenta, varias empresas" de resolve-login-identifier, y
+normalmente es lo que uno quiere.
+
+Aquí no: los dos proveedores del piloto (PROV-002157 ADSEMBLE SRL y
+PROV-003735 Jonatan Francisco María Castro) **existen en las dos empresas
+nuevas**, así que la primera corrida creó 4 vínculos que nadie pidió —
+y "solo visibles para las analistas" habría durado lo que tarda el cron.
+
+Se comprobó ANTES de activar (consultando BC si esos dos vendor numbers
+existían allá) y se limpiaron los 4 vínculos después de sincronizar.
+
+**Para la próxima vez que se active una empresa**: revisar
+`user_vendor_mapping` de esa empresa después de la primera corrida de
+`bc-sync-vendors`. Basta hacerlo una vez — el auto-vínculo solo se
+dispara con proveedores *recién creados*, no vuelve a recrear lo borrado.
+
+### Verificado
+
+Simulando cada rol contra las policies reales: analista 9 empresas con
+las dos nuevas incluidas; administradora 7, sin ellas; proveedor 7, sin
+ellas. Y en el navegador, con la sesión real de Verónica Tejeda, el
+selector muestra las nueve.
+
+El superadmin las ve por diseño (la RLS lo exime), y eso no se puede ni
+se debe acotar.
